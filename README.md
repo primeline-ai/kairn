@@ -224,6 +224,18 @@ Typical operation times on modern hardware:
 | `kn_recall` (graph traversal) | 10-50ms |
 | `kn_crossref` (cross-workspace) | 20-100ms |
 
+## Used By
+
+| Project | What It Uses Kairn For |
+|---------|----------------------|
+| [Quantum Lens](https://github.com/primeline-ai/quantum-lens) | Persistent insight storage, cross-analysis pattern tracking, lens effectiveness metrics |
+| [Claude Code Starter System](https://github.com/primeline-ai/claude-code-starter-system) | Session memory, project state, learning persistence |
+
+## Links
+
+- **Website**: [primeline.cc](https://primeline.cc)
+- **Twitter**: [@PrimeLineAI](https://x.com/PrimeLineAI)
+
 ## License
 
 MIT
