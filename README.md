@@ -231,11 +231,22 @@ Typical operation times on modern hardware:
 | [Quantum Lens](https://github.com/primeline-ai/quantum-lens) | Persistent insight storage, cross-analysis pattern tracking, lens effectiveness metrics |
 | [Claude Code Starter System](https://github.com/primeline-ai/claude-code-starter-system) | Session memory, project state, learning persistence |
 
-## Links
-
-- **Website**: [primeline.cc](https://primeline.cc)
-- **Twitter**: [@PrimeLineAI](https://x.com/PrimeLineAI)
-
 ## License
 
 MIT
+
+---
+
+## Part of the PrimeLine Ecosystem
+
+| Tool | What It Does |
+|------|-------------|
+| [**Evolving Lite**](https://github.com/primeline-ai/evolving-lite) | Self-improving Claude Code plugin — memory, delegation, self-correction |
+| [**Kairn**](https://github.com/primeline-ai/kairn) | Persistent knowledge graph with context routing for AI |
+| [**tmux Orchestration**](https://github.com/primeline-ai/claude-tmux-orchestration) | Parallel Claude Code sessions with heartbeat monitoring |
+| [**UPF**](https://github.com/primeline-ai/universal-planning-framework) | 3-stage planning with adversarial hardening |
+| [**Quantum Lens**](https://github.com/primeline-ai/quantum-lens) | 7 cognitive lenses for multi-perspective analysis |
+| [**PrimeLine Skills**](https://github.com/primeline-ai/primeline-skills) | 5 production-grade workflow skills for Claude Code |
+| [**Starter System**](https://github.com/primeline-ai/claude-code-starter-system) | Lightweight session memory and handoffs |
+
+**[@PrimeLineAI](https://x.com/PrimeLineAI)** · [primeline.cc](https://primeline.cc) · [Free Guide](https://primeline.cc/guide)
