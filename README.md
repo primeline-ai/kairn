@@ -183,7 +183,7 @@ KAIRN_JWT_SECRET=<your-secret>        # Required for team features
 ## Development
 
 ```bash
-git clone https://github.com/kairn-ai/kairn
+git clone https://github.com/primeline-ai/kairn
 cd kairn
 pip install -e ".[dev,team]"
 pytest tests/ -v --cov

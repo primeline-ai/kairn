@@ -44,9 +44,9 @@ dev = [
 kairn = "kairn.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/kairn-ai/kairn"
-Documentation = "https://github.com/kairn-ai/kairn#readme"
-Repository = "https://github.com/kairn-ai/kairn"
+Homepage = "https://github.com/primeline-ai/kairn"
+Documentation = "https://github.com/primeline-ai/kairn#readme"
+Repository = "https://github.com/primeline-ai/kairn"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kairn"]
