@@ -503,6 +503,33 @@ class SQLiteStore(StorageBackend):
         await self.db.commit()
         return cursor.rowcount > 0
 
+    async def query_experiences_since(
+        self,
+        since: str,
+        *,
+        namespace: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Return experiences created at or after `since` (ISO-8601 UTC string).
+
+        Used by the `kairn query --since` CLI subcommand that powers
+        bidirectional sync between Kairn workspaces. Returns newest first.
+        """
+        conditions = ["created_at >= ?"]
+        params: list[Any] = [since]
+        if namespace:
+            conditions.append("namespace = ?")
+            params.append(namespace)
+        where = " AND ".join(conditions)
+        params.append(limit)
+        cursor = await self.db.execute(
+            f"SELECT * FROM experiences WHERE {where} "
+            f"ORDER BY created_at DESC LIMIT ?",
+            params,
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(row) for row in rows]
+
     async def get_promotable_experiences(self) -> list[dict[str, Any]]:
         cursor = await self.db.execute(
             """SELECT * FROM experiences

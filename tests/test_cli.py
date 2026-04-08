@@ -491,3 +491,361 @@ class TestErrors:
             check=False,
         )
         assert rc != 0
+
+
+# ──────────────────────────────────────────────────────────
+# Phase 4: Graph CRUD + query + project/idea/log parity
+# ──────────────────────────────────────────────────────────
+
+
+class TestAddConnectRemove:
+    def test_add_creates_node(self, workspace: Path):
+        _, out, _ = _run_kairn(
+            "add",
+            str(workspace),
+            "--name",
+            "Auth Gateway",
+            "--type",
+            "concept",
+            "--description",
+            "Handles all authentication flows",
+            "--tags",
+            "auth,security",
+        )
+        result = json.loads(out)
+        assert result["_v"] == "1.0"
+        assert result["name"] == "Auth Gateway"
+        assert result["id"]
+
+    def test_add_with_explicit_namespace(self, workspace: Path):
+        _, out, _ = _run_kairn(
+            "add",
+            str(workspace),
+            "--name",
+            "Isolated Concept",
+            "--type",
+            "concept",
+            "--namespace",
+            "tenant-alpha",
+        )
+        result = json.loads(out)
+        assert result["id"]
+
+    def test_connect_creates_edge(self, workspace: Path):
+        # Build two nodes to link
+        _, out_a, _ = _run_kairn(
+            "add", str(workspace), "--name", "Cache Layer", "--type", "concept"
+        )
+        _, out_b, _ = _run_kairn(
+            "add", str(workspace), "--name", "API Server", "--type", "concept"
+        )
+        node_a = json.loads(out_a)["id"]
+        node_b = json.loads(out_b)["id"]
+
+        _, out, _ = _run_kairn(
+            "connect",
+            str(workspace),
+            "--source-id",
+            node_a,
+            "--target-id",
+            node_b,
+            "--edge-type",
+            "depends_on",
+            "--weight",
+            "0.8",
+        )
+        result = json.loads(out)
+        assert result["source_id"] == node_a
+        assert result["target_id"] == node_b
+        assert result["type"] == "depends_on"
+
+    def test_remove_node_succeeds(self, workspace: Path):
+        _, out, _ = _run_kairn(
+            "add", str(workspace), "--name", "Disposable", "--type", "concept"
+        )
+        node_id = json.loads(out)["id"]
+
+        _, out, _ = _run_kairn("remove", str(workspace), "--node-id", node_id)
+        result = json.loads(out)
+        assert result["removed"] == "node"
+        assert result["id"] == node_id
+
+    def test_remove_missing_node_errors(self, workspace: Path):
+        rc, _, stderr = _run_kairn(
+            "remove",
+            str(workspace),
+            "--node-id",
+            "nonexistent-id",
+            check=False,
+        )
+        assert rc != 0
+        err = json.loads(stderr)
+        assert "nonexistent-id" in err["error"]
+
+    def test_remove_requires_target(self, workspace: Path):
+        rc, _, _ = _run_kairn("remove", str(workspace), check=False)
+        assert rc != 0
+
+
+class TestQuery:
+    def test_query_nodes_by_text(self, workspace: Path):
+        _run_kairn(
+            "add",
+            str(workspace),
+            "--name",
+            "Redis Cache Pattern",
+            "--type",
+            "pattern",
+            "--description",
+            "In-memory cache with TTL",
+        )
+        _, out, _ = _run_kairn("query", str(workspace), "--text", "redis")
+        result = json.loads(out)
+        assert result["_v"] == "1.0"
+        assert result["count"] >= 1
+        assert isinstance(result["nodes"], list)
+
+    def test_query_nodes_by_namespace(self, workspace: Path):
+        _run_kairn(
+            "add",
+            str(workspace),
+            "--name",
+            "Scoped Node",
+            "--type",
+            "concept",
+            "--namespace",
+            "team-beta",
+        )
+        _, out, _ = _run_kairn(
+            "query", str(workspace), "--namespace", "team-beta"
+        )
+        result = json.loads(out)
+        assert result["count"] >= 1
+
+    def test_query_since_returns_experiences(self, workspace: Path):
+        # Learn something so there's an experience after epoch
+        _run_kairn(
+            "learn",
+            str(workspace),
+            "--content",
+            "Time-based query demo",
+            "--type",
+            "pattern",
+            "--confidence",
+            "medium",
+        )
+        _, out, _ = _run_kairn(
+            "query",
+            str(workspace),
+            "--since",
+            "2000-01-01T00:00:00",
+        )
+        result = json.loads(out)
+        assert result["_v"] == "1.0"
+        assert result["count"] >= 1
+        assert isinstance(result["experiences"], list)
+
+    def test_query_since_format_json_emits_bare_list(self, workspace: Path):
+        """`--format json --since X` emits a JSON array directly.
+
+        Shell-based replication consumers expect to pipe this into jq
+        or json.load without needing to unwrap an envelope.
+        """
+        _run_kairn(
+            "learn",
+            str(workspace),
+            "--content",
+            "Bidirectional sync input",
+            "--type",
+            "decision",
+            "--confidence",
+            "medium",
+        )
+        _, out, _ = _run_kairn(
+            "query",
+            str(workspace),
+            "--since",
+            "2000-01-01T00:00:00",
+            "--format",
+            "json",
+        )
+        parsed = json.loads(out)
+        assert isinstance(parsed, list), "Expected bare JSON list for sync consumers"
+        assert len(parsed) >= 1
+        # Each entry should look like an experience row
+        assert "id" in parsed[0]
+        assert "content" in parsed[0]
+        assert "created_at" in parsed[0]
+
+    def test_query_since_empty_window_returns_empty_list(self, workspace: Path):
+        """Future `--since` should produce an empty list (still valid JSON)."""
+        _, out, _ = _run_kairn(
+            "query",
+            str(workspace),
+            "--since",
+            "2099-12-31T23:59:59",
+            "--format",
+            "json",
+        )
+        parsed = json.loads(out)
+        assert parsed == []
+
+
+class TestPrune:
+    def test_prune_returns_envelope(self, workspace: Path):
+        # Nothing to prune on a fresh workspace
+        _, out, _ = _run_kairn("prune", str(workspace), "--threshold", "0.5")
+        result = json.loads(out)
+        assert result["_v"] == "1.0"
+        assert "pruned_count" in result
+        assert isinstance(result["pruned_ids"], list)
+
+
+class TestProjectLog:
+    def test_project_create_and_log_progress(self, workspace: Path):
+        _, out, _ = _run_kairn(
+            "project",
+            str(workspace),
+            "--name",
+            "Launch Playbook",
+            "--goals",
+            "Ship v1,Validate users,Measure churn",
+        )
+        proj = json.loads(out)
+        assert proj["_v"] == "1.0"
+        assert proj["name"] == "Launch Playbook"
+        assert proj["phase"] == "planning"
+        project_id = proj["id"]
+
+        _, out, _ = _run_kairn("projects", str(workspace))
+        result = json.loads(out)
+        assert any(p["id"] == project_id for p in result["projects"])
+
+        _, out, _ = _run_kairn(
+            "log",
+            str(workspace),
+            "--project-id",
+            project_id,
+            "--action",
+            "Built the onboarding flow",
+            "--type",
+            "progress",
+        )
+        entry = json.loads(out)
+        assert entry["project_id"] == project_id
+        assert entry["type"] == "progress"
+        assert entry["action"] == "Built the onboarding flow"
+
+    def test_log_failure_entry(self, workspace: Path):
+        _, out, _ = _run_kairn(
+            "project", str(workspace), "--name", "Tracked Project"
+        )
+        project_id = json.loads(out)["id"]
+
+        _, out, _ = _run_kairn(
+            "log",
+            str(workspace),
+            "--project-id",
+            project_id,
+            "--action",
+            "Deploy step failed",
+            "--type",
+            "failure",
+            "--result",
+            "Network timeout",
+            "--next-step",
+            "Retry with exponential backoff",
+        )
+        entry = json.loads(out)
+        assert entry["type"] == "failure"
+
+
+class TestIdeasCli:
+    def test_idea_create_then_list(self, workspace: Path):
+        _, out, _ = _run_kairn(
+            "idea",
+            str(workspace),
+            "--title",
+            "Add dark mode",
+            "--category",
+            "ux",
+            "--score",
+            "0.85",
+        )
+        created = json.loads(out)
+        assert created["title"] == "Add dark mode"
+        assert created["status"] == "draft"
+
+        _, out, _ = _run_kairn("ideas", str(workspace))
+        listing = json.loads(out)
+        assert listing["count"] >= 1
+        assert any(i["title"] == "Add dark mode" for i in listing["ideas"])
+
+
+class TestRelatedCli:
+    def test_related_returns_envelope(self, workspace: Path):
+        _, out_a, _ = _run_kairn(
+            "add", str(workspace), "--name", "Anchor", "--type", "concept"
+        )
+        _, out_b, _ = _run_kairn(
+            "add", str(workspace), "--name", "Neighbour", "--type", "concept"
+        )
+        node_a = json.loads(out_a)["id"]
+        node_b = json.loads(out_b)["id"]
+        _run_kairn(
+            "connect",
+            str(workspace),
+            "--source-id",
+            node_a,
+            "--target-id",
+            node_b,
+            "--edge-type",
+            "references",
+        )
+
+        _, out, _ = _run_kairn(
+            "related", str(workspace), "--node-id", node_a, "--depth", "1"
+        )
+        result = json.loads(out)
+        assert result["_v"] == "1.0"
+        assert "count" in result
+        assert isinstance(result["results"], list)
+
+
+class TestReplicationOutputShape:
+    """Integration test: `query --since --format json` output must be
+    parseable by shell-based replication consumers.
+
+    A representative consumer does:
+        echo "$EXPORT" | python3 -c 'import json,sys; \\
+            d=json.load(sys.stdin); \\
+            print(len(d) if isinstance(d,list) else "unknown")'
+
+    That pattern requires the output to be a bare JSON list, not an envelope.
+    """
+
+    def test_output_parses_as_json_list_with_len(self, workspace: Path):
+        _run_kairn(
+            "learn",
+            str(workspace),
+            "--content",
+            "Sync integration content",
+            "--type",
+            "pattern",
+            "--confidence",
+            "medium",
+        )
+        _, out, _ = _run_kairn(
+            "query",
+            str(workspace),
+            "--since",
+            "2000-01-01T00:00:00",
+            "--format",
+            "json",
+        )
+        # Exactly what the bash script does:
+        parsed = json.loads(out)
+        assert isinstance(parsed, list)
+        count = len(parsed) if isinstance(parsed, list) else "unknown"
+        assert isinstance(count, int)
+        assert count >= 1

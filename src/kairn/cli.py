@@ -630,6 +630,538 @@ def crossref(path: str, problem: str, limit: int) -> None:
     _run_json(_run)
 
 
+# ──────────────────────────────────────────────────────────
+# Phase 4: Graph CRUD + query + project/idea/log parity
+# ──────────────────────────────────────────────────────────
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--text", default=None, help="Full-text search query")
+@click.option("--namespace", default=None, help="Filter by namespace")
+@click.option("--node-type", default=None, help="Filter by node type")
+@click.option("--tags", default=None, help="Comma-separated tags")
+@click.option(
+    "--detail",
+    default="summary",
+    type=click.Choice(["summary", "full"]),
+    help="Detail level for node responses",
+)
+@click.option("--limit", default=10, type=click.IntRange(1, 1000), help="Max results")
+@click.option("--offset", default=0, type=click.IntRange(0), help="Pagination offset")
+@click.option(
+    "--since",
+    default=None,
+    help="ISO-8601 timestamp: return experiences created at or after this time",
+)
+@click.option(
+    "--format",
+    "format_",
+    default="envelope",
+    type=click.Choice(["envelope", "json"]),
+    help="Output format: envelope (default) or raw JSON list (used by sync scripts)",
+)
+def query(
+    path: str,
+    text: str | None,
+    namespace: str | None,
+    node_type: str | None,
+    tags: str | None,
+    detail: str,
+    limit: int,
+    offset: int,
+    since: str | None,
+    format_: str,
+) -> None:
+    """Query nodes, or experiences by timestamp.
+
+    Two modes:
+    - Default: search nodes by text/tags/type/namespace (mirrors kn_query).
+    - `--since <iso>`: switches to experience time-range query, useful for
+      incremental exports and replication pipelines. With `--format json`,
+      emits a bare JSON list so shell consumers can parse directly.
+    """
+    db_path = _resolve_db(path)
+    tag_list = _parse_tags(tags)
+
+    async def _run() -> dict | list:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            if since:
+                rows = await store.query_experiences_since(
+                    since,
+                    namespace=namespace,
+                    limit=limit,
+                )
+                if format_ == "json":
+                    return rows
+                return {"_v": "1.0", "count": len(rows), "experiences": rows}
+
+            nodes = await intel.graph.query(
+                text=text,
+                namespace=namespace,
+                node_type=node_type,
+                tags=tag_list,
+                limit=limit,
+                offset=offset,
+            )
+            items = [n.to_response(detail=detail) for n in nodes]
+            return {"_v": "1.0", "count": len(items), "nodes": items}
+        finally:
+            await store.close()
+
+    _run_json(_run)
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--name", required=True, help="Node name")
+@click.option("--type", "type_", required=True, help="Node type (concept, pattern, etc.)")
+@click.option("--namespace", default="knowledge", help="Namespace")
+@click.option("--description", default=None, help="Node description")
+@click.option("--tags", default=None, help="Comma-separated tags")
+def add(
+    path: str,
+    name: str,
+    type_: str,
+    namespace: str,
+    description: str | None,
+    tags: str | None,
+) -> None:
+    """Add a node to the knowledge graph. Auto-links via FTS5."""
+    db_path = _resolve_db(path)
+    tag_list = _parse_tags(tags)
+
+    async def _run() -> dict:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            node = await intel.graph.add_node(
+                name=name,
+                type=type_,
+                namespace=namespace,
+                description=description,
+                tags=tag_list,
+            )
+            await intel.router.update_routes_for_node(
+                node.id,
+                node.name,
+                node.description,
+            )
+            result = node.to_response(detail="full")
+            result["_v"] = "1.0"
+            return result
+        finally:
+            await store.close()
+
+    _run_json(_run)
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--source-id", required=True, help="Source node ID")
+@click.option("--target-id", required=True, help="Target node ID")
+@click.option("--edge-type", required=True, help="Relationship type")
+@click.option(
+    "--weight",
+    default=1.0,
+    type=click.FloatRange(0.0, 1.0),
+    help="Edge weight 0.0-1.0",
+)
+def connect(
+    path: str,
+    source_id: str,
+    target_id: str,
+    edge_type: str,
+    weight: float,
+) -> None:
+    """Create a typed, weighted edge between two nodes."""
+    db_path = _resolve_db(path)
+
+    async def _run() -> dict:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            edge = await intel.graph.connect(
+                source_id,
+                target_id,
+                edge_type,
+                weight=weight,
+            )
+            result = edge.to_storage()
+            result["_v"] = "1.0"
+            return result
+        finally:
+            await store.close()
+
+    _run_json(_run)
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--node-id", default=None, help="Node ID to soft-delete")
+@click.option("--source-id", default=None, help="Edge source ID")
+@click.option("--target-id", default=None, help="Edge target ID")
+@click.option("--edge-type", default=None, help="Edge type")
+def remove(
+    path: str,
+    node_id: str | None,
+    source_id: str | None,
+    target_id: str | None,
+    edge_type: str | None,
+) -> None:
+    """Soft-delete a node or an edge.
+
+    Pass `--node-id` for node removal, or all three edge flags for an edge.
+    """
+    if not node_id and not (source_id and target_id and edge_type):
+        raise click.UsageError(
+            "Provide --node-id OR all of --source-id, --target-id, --edge-type"
+        )
+
+    db_path = _resolve_db(path)
+
+    async def _run() -> dict:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            if node_id:
+                ok = await intel.graph.remove_node(node_id)
+                if not ok:
+                    raise ValueError(f"Node not found: {node_id}")
+                return {"_v": "1.0", "removed": "node", "id": node_id}
+
+            # Edge removal
+            ok = await intel.graph.disconnect(source_id, target_id, edge_type)
+            if not ok:
+                raise ValueError("Edge not found")
+            return {
+                "_v": "1.0",
+                "removed": "edge",
+                "source_id": source_id,
+                "target_id": target_id,
+                "edge_type": edge_type,
+            }
+        finally:
+            await store.close()
+
+    _run_json(_run)
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option(
+    "--threshold",
+    default=0.01,
+    type=click.FloatRange(0.0, 1.0),
+    help="Remove experiences below this relevance",
+)
+def prune(path: str, threshold: float) -> None:
+    """Remove expired experiences below the relevance threshold."""
+    db_path = _resolve_db(path)
+
+    async def _run() -> dict:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            pruned = await intel.experience.prune(threshold=threshold)
+            return {
+                "_v": "1.0",
+                "pruned_count": len(pruned),
+                "pruned_ids": pruned,
+            }
+        finally:
+            await store.close()
+
+    _run_json(_run)
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--name", required=True, help="Project name")
+@click.option("--project-id", default=None, help="Project ID (omit to create new)")
+@click.option("--phase", default=None, help="planning|active|paused|done")
+@click.option("--goals", default=None, help="Comma-separated goals")
+@click.option("--stakeholders", default=None, help="Comma-separated stakeholders")
+@click.option("--success-metrics", default=None, help="Comma-separated success metrics")
+def project(
+    path: str,
+    name: str,
+    project_id: str | None,
+    phase: str | None,
+    goals: str | None,
+    stakeholders: str | None,
+    success_metrics: str | None,
+) -> None:
+    """Create or update a project (upsert)."""
+    db_path = _resolve_db(path)
+    goals_list = _parse_tags(goals)
+    stakeholders_list = _parse_tags(stakeholders)
+    metrics_list = _parse_tags(success_metrics)
+
+    async def _run() -> dict:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            mem = intel.memory
+            if project_id:
+                updates: dict = {"name": name}
+                if phase is not None:
+                    updates["phase"] = phase
+                if goals_list is not None:
+                    updates["goals"] = goals_list
+                if stakeholders_list is not None:
+                    updates["stakeholders"] = stakeholders_list
+                if metrics_list is not None:
+                    updates["success_metrics"] = metrics_list
+                proj = await mem.update_project(project_id, **updates)
+                if not proj:
+                    raise ValueError(f"Project not found: {project_id}")
+            else:
+                if phase is not None:
+                    raise ValueError(
+                        "phase cannot be set on create (starts at planning)"
+                    )
+                proj = await mem.create_project(
+                    name=name,
+                    goals=goals_list,
+                    stakeholders=stakeholders_list,
+                    success_metrics=metrics_list,
+                )
+            return {
+                "_v": "1.0",
+                "id": proj.id,
+                "name": proj.name,
+                "phase": proj.phase,
+                "active": proj.active,
+                "goals": proj.goals,
+            }
+        finally:
+            await store.close()
+
+    _run_json(_run)
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--active-only", is_flag=True, help="Only show active projects")
+@click.option("--set-active", default=None, help="Project ID to set as active")
+def projects(path: str, active_only: bool, set_active: str | None) -> None:
+    """List projects and optionally switch the active one."""
+    db_path = _resolve_db(path)
+
+    async def _run() -> dict:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            mem = intel.memory
+            if set_active:
+                ok = await mem.set_active_project(set_active)
+                if not ok:
+                    raise ValueError(f"Project not found: {set_active}")
+            proj_list = await mem.list_projects(active_only=active_only)
+            items = [
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "phase": p.phase,
+                    "active": p.active,
+                }
+                for p in proj_list
+            ]
+            return {"_v": "1.0", "count": len(items), "projects": items}
+        finally:
+            await store.close()
+
+    _run_json(_run)
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--project-id", required=True, help="Project ID")
+@click.option("--action", required=True, help="What was done (or what failed)")
+@click.option(
+    "--type",
+    "type_",
+    default="progress",
+    type=click.Choice(["progress", "failure"]),
+    help="Entry type",
+)
+@click.option("--result", default=None, help="Outcome or error message")
+@click.option("--next-step", default=None, help="Recommended next step")
+def log(
+    path: str,
+    project_id: str,
+    action: str,
+    type_: str,
+    result: str | None,
+    next_step: str | None,
+) -> None:
+    """Log a progress or failure entry against a project."""
+    db_path = _resolve_db(path)
+
+    async def _run() -> dict:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            mem = intel.memory
+            if type_ == "failure":
+                entry = await mem.log_failure(
+                    project_id=project_id,
+                    action=action,
+                    result=result,
+                    next_step=next_step,
+                )
+            else:
+                entry = await mem.log_progress(
+                    project_id=project_id,
+                    action=action,
+                    result=result,
+                    next_step=next_step,
+                )
+            return {
+                "_v": "1.0",
+                "id": entry.id,
+                "project_id": entry.project_id,
+                "type": entry.type,
+                "action": entry.action,
+            }
+        finally:
+            await store.close()
+
+    _run_json(_run)
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--title", required=True, help="Idea title")
+@click.option("--idea-id", default=None, help="Idea ID (omit to create new)")
+@click.option("--category", default=None, help="Category classification")
+@click.option("--score", default=None, type=float, help="Numerical score")
+@click.option(
+    "--status",
+    default=None,
+    help="draft|evaluating|approved|implementing|done|archived",
+)
+@click.option("--link-to", default=None, help="Node ID to link this idea to")
+def idea(
+    path: str,
+    title: str,
+    idea_id: str | None,
+    category: str | None,
+    score: float | None,
+    status: str | None,
+    link_to: str | None,
+) -> None:
+    """Create or update an idea, optionally linking it to a graph node."""
+    db_path = _resolve_db(path)
+
+    async def _run() -> dict:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            ideas_engine = intel.ideas
+            if idea_id:
+                updates: dict = {"title": title}
+                if category is not None:
+                    updates["category"] = category
+                if score is not None:
+                    updates["score"] = score
+                if status is not None:
+                    updates["status"] = status
+                obj = await ideas_engine.update(idea_id, **updates)
+                if not obj:
+                    raise ValueError(f"Idea not found: {idea_id}")
+            else:
+                obj = await ideas_engine.create(
+                    title=title,
+                    category=category,
+                    score=score,
+                )
+
+            result: dict = {
+                "_v": "1.0",
+                "id": obj.id,
+                "title": obj.title,
+                "status": obj.status,
+                "category": obj.category,
+                "score": obj.score,
+            }
+            if link_to:
+                edge = await ideas_engine.link_to_node(obj.id, link_to)
+                result["linked_to"] = link_to if edge else None
+                if not edge:
+                    result["link_error"] = f"Node not found: {link_to}"
+            return result
+        finally:
+            await store.close()
+
+    _run_json(_run)
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--status", default=None, help="Filter by status")
+@click.option("--category", default=None, help="Filter by category")
+@click.option("--limit", default=10, type=click.IntRange(1, 50), help="Max results")
+@click.option("--offset", default=0, type=click.IntRange(0), help="Pagination offset")
+def ideas(
+    path: str,
+    status: str | None,
+    category: str | None,
+    limit: int,
+    offset: int,
+) -> None:
+    """List and filter ideas by status or category."""
+    db_path = _resolve_db(path)
+
+    async def _run() -> dict:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            ideas_list = await intel.ideas.list_ideas(
+                status=status,
+                category=category,
+                limit=limit,
+                offset=offset,
+            )
+            items = [
+                {
+                    "id": i.id,
+                    "title": i.title,
+                    "status": i.status,
+                    "category": i.category,
+                    "score": i.score,
+                }
+                for i in ideas_list
+            ]
+            return {"_v": "1.0", "count": len(items), "ideas": items}
+        finally:
+            await store.close()
+
+    _run_json(_run)
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--node-id", required=True, help="Starting node ID")
+@click.option("--depth", default=1, type=click.IntRange(1, 5), help="Traversal depth")
+@click.option("--edge-type", default=None, help="Filter by edge type")
+def related(
+    path: str,
+    node_id: str,
+    depth: int,
+    edge_type: str | None,
+) -> None:
+    """Find nodes connected to a starting point (via the intelligence layer)."""
+    db_path = _resolve_db(path)
+
+    async def _run() -> dict:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            results = await intel.related(
+                node_id=node_id,
+                depth=depth,
+                edge_type=edge_type,
+            )
+            return {"_v": "1.0", "count": len(results), "results": results}
+        finally:
+            await store.close()
+
+    _run_json(_run)
+
+
 @main.command()
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--nodes", default=1000, help="Number of nodes to create")
