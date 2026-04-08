@@ -580,3 +580,56 @@ async def test_promoted_experience_not_promoted_again(engine):
     # Access again - should not create new node
     exp = await engine.access(exp.id)
     assert exp.promoted_to_node_id == first_node_id
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Namespace tests (Phase 3: multi-tenant isolation)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_namespace_default(engine):
+    """Saving without namespace arg defaults to 'knowledge'."""
+    exp = await engine.save(content="Default namespace check", type="solution")
+    assert exp.namespace == "knowledge"
+
+    # Round-trip: reload from store and verify the column persisted.
+    retrieved = await engine.get(exp.id)
+    assert retrieved is not None
+    assert retrieved.namespace == "knowledge"
+
+
+@pytest.mark.asyncio
+async def test_save_with_namespace(engine):
+    """Explicit namespace persists round-trip via SQLite store."""
+    exp = await engine.save(
+        content="Primeline-scoped knowledge",
+        type="pattern",
+        namespace="primeline",
+    )
+    assert exp.namespace == "primeline"
+
+    retrieved = await engine.get(exp.id)
+    assert retrieved is not None
+    assert retrieved.namespace == "primeline"
+    assert retrieved.content == "Primeline-scoped knowledge"
+
+
+@pytest.mark.asyncio
+async def test_namespace_isolation_across_saves(engine):
+    """Multiple saves with different namespaces remain independently tagged."""
+    exp_a = await engine.save(
+        content="Alpha tenant insight", type="solution", namespace="alpha"
+    )
+    exp_b = await engine.save(
+        content="Beta tenant insight", type="solution", namespace="beta"
+    )
+    exp_default = await engine.save(content="Shared insight", type="solution")
+
+    retrieved_a = await engine.get(exp_a.id)
+    retrieved_b = await engine.get(exp_b.id)
+    retrieved_default = await engine.get(exp_default.id)
+
+    assert retrieved_a.namespace == "alpha"
+    assert retrieved_b.namespace == "beta"
+    assert retrieved_default.namespace == "knowledge"

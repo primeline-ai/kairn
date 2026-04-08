@@ -455,6 +455,11 @@ def _run_json(coro_factory) -> None:
     help="Confidence level (affects decay rate for experiences)",
 )
 @click.option("--tags", default=None, help="Comma-separated tags")
+@click.option(
+    "--namespace",
+    default="knowledge",
+    help="Namespace for multi-tenant isolation (default 'knowledge')",
+)
 def learn(
     path: str,
     content: str,
@@ -462,6 +467,7 @@ def learn(
     context: str | None,
     confidence: str,
     tags: str | None,
+    namespace: str,
 ) -> None:
     """Store knowledge.
 
@@ -480,6 +486,7 @@ def learn(
                 context=context,
                 confidence=confidence,
                 tags=tag_list,
+                namespace=namespace,
             )
         finally:
             await store.close()

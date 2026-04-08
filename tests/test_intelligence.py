@@ -178,6 +178,66 @@ class TestLearn:
         event_types = [e[0] for e in events]
         assert "knowledge.learned" in event_types
 
+    @pytest.mark.asyncio
+    async def test_learn_default_namespace_is_knowledge(
+        self, engine: IntelligenceLayer
+    ):
+        """learn() without namespace arg records 'knowledge' on node + experience."""
+        result = await engine.learn(
+            content="Default namespace goes to knowledge",
+            type="pattern",
+            confidence="high",
+        )
+        assert result["namespace"] == "knowledge"
+
+        # Verify node landed in the knowledge namespace
+        node = await engine.store.get_node(result["node_id"])
+        assert node["namespace"] == "knowledge"
+
+        # Verify experience persists with the same namespace
+        exp = await engine.experience.get(result["experience_id"])
+        assert exp.namespace == "knowledge"
+
+    @pytest.mark.asyncio
+    async def test_learn_with_namespace_creates_namespaced_experience(
+        self, engine: IntelligenceLayer
+    ):
+        """learn(namespace=X) routes the node AND the experience to namespace X."""
+        result = await engine.learn(
+            content="Primeline growth cadence: ship daily, measure weekly",
+            type="decision",
+            confidence="high",
+            namespace="primeline",
+        )
+        assert result["stored_as"] == "node"
+        assert result["namespace"] == "primeline"
+
+        # Node in primeline namespace
+        node = await engine.store.get_node(result["node_id"])
+        assert node["namespace"] == "primeline"
+
+        # Experience in primeline namespace
+        exp = await engine.experience.get(result["experience_id"])
+        assert exp.namespace == "primeline"
+
+    @pytest.mark.asyncio
+    async def test_learn_medium_confidence_namespace_on_experience(
+        self, engine: IntelligenceLayer
+    ):
+        """Medium confidence skips the node but still tags the experience."""
+        result = await engine.learn(
+            content="Maybe sharding helps at 10M rows",
+            type="pattern",
+            confidence="medium",
+            namespace="workspace-gamma",
+        )
+        assert result["stored_as"] == "experience"
+        assert result["node_id"] is None
+        assert result["namespace"] == "workspace-gamma"
+
+        exp = await engine.experience.get(result["experience_id"])
+        assert exp.namespace == "workspace-gamma"
+
 
 # ──────────────────────────────────────────────────────────────────────
 # recall() tests

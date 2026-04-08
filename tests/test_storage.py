@@ -46,6 +46,93 @@ async def test_double_initialize(tmp_path):
     await store.close()
 
 
+async def test_migrate_legacy_experiences_adds_namespace_column(tmp_path):
+    """Phase 3 migration: a pre-existing DB without `experiences.namespace`
+    gets the column added during initialize(), existing rows default to
+    'knowledge', and row count is preserved.
+
+    This simulates the state of older engram databases that were created
+    before the namespace field existed (e.g. the production brain DB
+    with thousands of experiences).
+    """
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+
+    # Build a legacy schema DB by hand: experiences table without namespace.
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE experiences (
+            id TEXT PRIMARY KEY,
+            type TEXT NOT NULL,
+            content TEXT NOT NULL,
+            context TEXT,
+            confidence TEXT DEFAULT 'high',
+            score REAL NOT NULL DEFAULT 1.0,
+            decay_rate REAL NOT NULL,
+            tags JSON,
+            properties JSON,
+            created_by TEXT,
+            access_count INTEGER DEFAULT 0,
+            promoted_to_node_id TEXT,
+            created_at TEXT NOT NULL,
+            last_accessed TEXT
+        )
+        """
+    )
+    # Seed legacy rows
+    for i in range(3):
+        conn.execute(
+            "INSERT INTO experiences (id, type, content, decay_rate, created_at) "
+            "VALUES (?, 'solution', ?, 0.003, '2026-01-01T00:00:00Z')",
+            (f"legacy-{i}", f"Legacy experience {i}"),
+        )
+    conn.commit()
+
+    # Confirm pre-state: namespace column is absent
+    pre_cols = {row[1] for row in conn.execute("PRAGMA table_info(experiences)")}
+    assert "namespace" not in pre_cols
+    legacy_count = conn.execute("SELECT COUNT(*) FROM experiences").fetchone()[0]
+    assert legacy_count == 3
+    conn.close()
+
+    # Initialize the store — migration must fire
+    store = SQLiteStore(db_path)
+    await store.initialize()
+    try:
+        cursor = await store.db.execute("PRAGMA table_info(experiences)")
+        post_cols = {row[1] for row in await cursor.fetchall()}
+        assert "namespace" in post_cols
+
+        # Row count preserved
+        cursor = await store.db.execute("SELECT COUNT(*) FROM experiences")
+        row = await cursor.fetchone()
+        assert row[0] == 3
+
+        # Legacy rows default to 'knowledge'
+        cursor = await store.db.execute(
+            "SELECT namespace FROM experiences WHERE id = ?", ("legacy-0",)
+        )
+        row = await cursor.fetchone()
+        assert row[0] == "knowledge"
+
+        # Migration is idempotent: re-initializing on the same DB is a no-op
+        await store.close()
+        store2 = SQLiteStore(db_path)
+        await store2.initialize()
+        cursor = await store2.db.execute("SELECT COUNT(*) FROM experiences")
+        row = await cursor.fetchone()
+        assert row[0] == 3
+        await store2.close()
+    finally:
+        # store may already be closed by the idempotency branch above
+        try:
+            await store.close()
+        except Exception:
+            pass
+
+
 # --- Node CRUD ---
 
 

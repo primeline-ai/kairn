@@ -16,6 +16,7 @@ class Experience(BaseModel):
     """A temporal, decaying experience with promotion capability."""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    namespace: str = "knowledge"
     type: str
     content: str
     context: str | None = None
@@ -57,6 +58,7 @@ class Experience(BaseModel):
         if detail != "summary":
             data.update(
                 {
+                    "namespace": self.namespace,
                     "context": self.context,
                     "score": self.score,
                     "decay_rate": self.decay_rate,

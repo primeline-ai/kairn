@@ -146,6 +146,35 @@ class TestLearn:
         assert "error" in err
         assert "not_a_valid_type" in err["error"]
 
+    def test_learn_default_namespace_is_knowledge(self, workspace: Path):
+        _, out, _ = _run_kairn(
+            "learn",
+            str(workspace),
+            "--content",
+            "Default namespace via CLI",
+            "--type",
+            "pattern",
+        )
+        result = json.loads(out)
+        assert result["namespace"] == "knowledge"
+
+    def test_learn_with_explicit_namespace(self, workspace: Path):
+        _, out, _ = _run_kairn(
+            "learn",
+            str(workspace),
+            "--content",
+            "Circuit breaker pattern for fault tolerance",
+            "--type",
+            "pattern",
+            "--namespace",
+            "tenant-alpha",
+        )
+        result = json.loads(out)
+        assert result["_v"] == "1.0"
+        assert result["namespace"] == "tenant-alpha"
+        assert result["stored_as"] == "node"
+        assert result["node_id"] is not None
+
 
 # ──────────────────────────────────────────────────────────
 # recall
