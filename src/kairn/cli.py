@@ -365,6 +365,262 @@ def demo(path: str) -> None:
     asyncio.run(_demo())
 
 
+async def _build_intel_stack(db_path: Path):
+    """Build full IntelligenceLayer stack for CLI commands.
+
+    Returns (store, intel) tuple. Caller is responsible for awaiting store.close().
+    Reuses the exact wiring pattern from the demo command so MCP and CLI execute
+    through the same engines.
+    """
+    from kairn.core.experience import ExperienceEngine
+    from kairn.core.graph import GraphEngine
+    from kairn.core.ideas import IdeaEngine
+    from kairn.core.intelligence import IntelligenceLayer
+    from kairn.core.memory import ProjectMemory
+    from kairn.core.router import ContextRouter
+    from kairn.events.bus import EventBus
+
+    store = SQLiteStore(db_path)
+    await store.initialize()
+    bus = EventBus()
+    graph = GraphEngine(store, bus)
+    router = ContextRouter(store, bus)
+    memory_eng = ProjectMemory(store, bus)
+    experience = ExperienceEngine(store, bus)
+    ideas_eng = IdeaEngine(store, bus)
+    intel = IntelligenceLayer(
+        store=store,
+        event_bus=bus,
+        graph=graph,
+        router=router,
+        memory=memory_eng,
+        experience=experience,
+        ideas=ideas_eng,
+    )
+    return store, intel
+
+
+def _resolve_db(path: str) -> Path:
+    """Resolve workspace path to a kairn.db Path, exit on missing."""
+    workspace = Path(path).expanduser().resolve()
+    db_path = workspace / "kairn.db"
+    if not db_path.exists():
+        click.echo(
+            f"Error: No database at {db_path}. Run 'kairn init' first.",
+            err=True,
+        )
+        sys.exit(1)
+    return db_path
+
+
+def _parse_tags(tags: str | None) -> list[str] | None:
+    """Parse comma-separated tag string into list, or None."""
+    if not tags:
+        return None
+    return [t.strip() for t in tags.split(",") if t.strip()]
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--content", required=True, help="Knowledge content to learn")
+@click.option(
+    "--type",
+    "type_",
+    required=True,
+    help="Experience type: decision|pattern|solution|workaround|gotcha",
+)
+@click.option("--context", default=None, help="Optional context for the learning")
+@click.option(
+    "--confidence",
+    default="high",
+    type=click.Choice(["high", "medium", "low"]),
+    help="Confidence level (affects decay rate for experiences)",
+)
+@click.option("--tags", default=None, help="Comma-separated tags")
+def learn(
+    path: str,
+    content: str,
+    type_: str,
+    context: str | None,
+    confidence: str,
+    tags: str | None,
+) -> None:
+    """Store knowledge.
+
+    High confidence creates a permanent node + experience.
+    Medium/low confidence creates a decaying experience only.
+    """
+    db_path = _resolve_db(path)
+    tag_list = _parse_tags(tags)
+
+    async def _run() -> dict:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            return await intel.learn(
+                content=content,
+                type=type_,
+                context=context,
+                confidence=confidence,
+                tags=tag_list,
+            )
+        finally:
+            await store.close()
+
+    try:
+        result = asyncio.run(_run())
+    except ValueError as e:
+        click.echo(json.dumps({"_v": "1.0", "error": str(e)}), err=True)
+        sys.exit(1)
+    click.echo(json.dumps(result, default=str))
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--topic", default=None, help="Topic to recall knowledge about")
+@click.option("--limit", default=10, type=click.IntRange(1, 50), help="Max results")
+@click.option(
+    "--min-relevance",
+    default=0.0,
+    type=click.FloatRange(0.0, 1.0),
+    help="Minimum relevance filter",
+)
+def recall(path: str, topic: str | None, limit: int, min_relevance: float) -> None:
+    """Surface relevant past knowledge (cross-searches nodes + experiences)."""
+    db_path = _resolve_db(path)
+
+    async def _run() -> list:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            return await intel.recall(
+                topic=topic,
+                limit=limit,
+                min_relevance=min_relevance,
+            )
+        finally:
+            await store.close()
+
+    results = asyncio.run(_run())
+    click.echo(
+        json.dumps(
+            {"_v": "1.0", "count": len(results), "results": results},
+            default=str,
+        )
+    )
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--keywords", required=True, help="Keywords to find relevant context")
+@click.option(
+    "--detail",
+    default="summary",
+    type=click.Choice(["summary", "full"]),
+    help="Detail level",
+)
+@click.option("--limit", default=10, type=click.IntRange(1, 50), help="Max results per section")
+def context(path: str, keywords: str, detail: str, limit: int) -> None:
+    """Get relevant context subgraph (nodes + experiences) with progressive disclosure."""
+    db_path = _resolve_db(path)
+
+    async def _run() -> dict:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            return await intel.context(
+                keywords=keywords,
+                detail=detail,
+                limit=limit,
+            )
+        finally:
+            await store.close()
+
+    result = asyncio.run(_run())
+    click.echo(json.dumps(result, default=str))
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--text", default=None, help="Full-text search query")
+@click.option("--type", "type_", default=None, help="Filter by experience type")
+@click.option(
+    "--min-relevance",
+    default=0.0,
+    type=click.FloatRange(0.0, 1.0),
+    help="Minimum relevance filter",
+)
+@click.option("--limit", default=10, type=click.IntRange(1, 50), help="Max results")
+@click.option("--offset", default=0, type=click.IntRange(0), help="Pagination offset")
+def memories(
+    path: str,
+    text: str | None,
+    type_: str | None,
+    min_relevance: float,
+    limit: int,
+    offset: int,
+) -> None:
+    """Decay-aware experience search."""
+    db_path = _resolve_db(path)
+
+    async def _run() -> list:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            experiences = await intel.experience.search(
+                text=text,
+                exp_type=type_,
+                min_relevance=min_relevance,
+                limit=limit,
+                offset=offset,
+            )
+            return [
+                {
+                    "id": e.id,
+                    "type": e.type,
+                    "content": e.content,
+                    "confidence": e.confidence,
+                    "relevance": round(e.relevance(), 4),
+                    "tags": e.tags,
+                }
+                for e in experiences
+            ]
+        finally:
+            await store.close()
+
+    items = asyncio.run(_run())
+    click.echo(
+        json.dumps(
+            {"_v": "1.0", "count": len(items), "experiences": items},
+            default=str,
+        )
+    )
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--problem", required=True, help="Problem description to find solutions for")
+@click.option("--limit", default=10, type=click.IntRange(1, 50), help="Max results")
+def crossref(path: str, problem: str, limit: int) -> None:
+    """Find similar solutions in the workspace (cross-references nodes + experiences)."""
+    db_path = _resolve_db(path)
+
+    async def _run() -> list:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            return await intel.crossref(problem=problem, limit=limit)
+        finally:
+            await store.close()
+
+    try:
+        results = asyncio.run(_run())
+    except ValueError as e:
+        click.echo(json.dumps({"_v": "1.0", "error": str(e)}), err=True)
+        sys.exit(1)
+    click.echo(
+        json.dumps(
+            {"_v": "1.0", "count": len(results), "results": results},
+            default=str,
+        )
+    )
+
+
 @main.command()
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--nodes", default=1000, help="Number of nodes to create")
