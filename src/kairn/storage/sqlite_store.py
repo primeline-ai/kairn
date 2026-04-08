@@ -114,6 +114,14 @@ class SQLiteStore(StorageBackend):
 
         Each migration checks current state before acting so running on a
         fresh DB (where CREATE TABLE already includes the column) is a no-op.
+
+        Concurrency assumption: Kairn runs single-process per workspace
+        (each MCP server / CLI invocation owns its own SQLite connection).
+        The PRAGMA-check then ALTER-TABLE window is not guarded beyond
+        SQLite's own write serialization, so simultaneous init of a fresh
+        legacy DB from two processes could theoretically race. Not
+        exploitable under current deployment shape — flagged for the
+        future if multi-writer init becomes a thing.
         """
         assert self._db is not None
 

@@ -1,4 +1,27 @@
-"""CLI — init, serve, status, workspace, demo, benchmark, token-audit."""
+"""Kairn CLI.
+
+Workspace lifecycle:
+    init, serve, status, workspace (create/join/leave), demo, benchmark, token-audit
+
+Intelligence layer (mirrors MCP tools):
+    learn, recall, context, memories, crossref
+
+Graph CRUD + query:
+    add, connect, remove, query, related
+
+Experience lifecycle:
+    prune
+
+Projects + work log:
+    project, projects, log
+
+Ideas:
+    idea, ideas
+
+All intelligence/graph/projects/ideas subcommands emit a versioned JSON
+envelope ({"_v": "1.0", ...}) on stdout. The `query --since --format json`
+variant emits a bare JSON list for replication consumers.
+"""
 
 from __future__ import annotations
 

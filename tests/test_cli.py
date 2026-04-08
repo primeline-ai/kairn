@@ -677,6 +677,55 @@ class TestQuery:
         assert "content" in parsed[0]
         assert "created_at" in parsed[0]
 
+    def test_query_since_combined_with_namespace_filter(self, workspace: Path):
+        """`--since` + `--namespace` should narrow to that tenant only.
+
+        Locks in the combined filter path through storage.query_experiences_since,
+        so a replication consumer scoped to one namespace only sees its own rows.
+        """
+        # Seed two experiences in different namespaces
+        _run_kairn(
+            "learn",
+            str(workspace),
+            "--content",
+            "Alpha-tenant signal",
+            "--type",
+            "pattern",
+            "--confidence",
+            "medium",
+            "--namespace",
+            "alpha",
+        )
+        _run_kairn(
+            "learn",
+            str(workspace),
+            "--content",
+            "Beta-tenant signal",
+            "--type",
+            "pattern",
+            "--confidence",
+            "medium",
+            "--namespace",
+            "beta",
+        )
+
+        _, out, _ = _run_kairn(
+            "query",
+            str(workspace),
+            "--since",
+            "2000-01-01T00:00:00",
+            "--namespace",
+            "alpha",
+            "--format",
+            "json",
+        )
+        parsed = json.loads(out)
+        assert isinstance(parsed, list)
+        assert len(parsed) >= 1
+        # Every returned row must belong to the filtered namespace
+        for row in parsed:
+            assert row["namespace"] == "alpha"
+
     def test_query_since_empty_window_returns_empty_list(self, workspace: Path):
         """Future `--since` should produce an empty list (still valid JSON)."""
         _, out, _ = _run_kairn(
