@@ -420,6 +420,24 @@ def _parse_tags(tags: str | None) -> list[str] | None:
     return [t.strip() for t in tags.split(",") if t.strip()]
 
 
+def _run_json(coro_factory) -> None:
+    """Run an async factory and emit its result as JSON, or an error envelope.
+
+    Catches ValueError raised by engines (invalid type/confidence/etc.), emits
+    {"_v": "1.0", "error": "..."} to stderr, and exits non-zero. Successful
+    results are json.dumps'd to stdout.
+
+    The factory is a zero-arg callable returning a coroutine so each invocation
+    starts a fresh event loop cleanly.
+    """
+    try:
+        result = asyncio.run(coro_factory())
+    except ValueError as e:
+        click.echo(json.dumps({"_v": "1.0", "error": str(e)}), err=True)
+        sys.exit(1)
+    click.echo(json.dumps(result, default=str))
+
+
 @main.command()
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--content", required=True, help="Knowledge content to learn")
@@ -466,12 +484,7 @@ def learn(
         finally:
             await store.close()
 
-    try:
-        result = asyncio.run(_run())
-    except ValueError as e:
-        click.echo(json.dumps({"_v": "1.0", "error": str(e)}), err=True)
-        sys.exit(1)
-    click.echo(json.dumps(result, default=str))
+    _run_json(_run)
 
 
 @main.command()
@@ -488,24 +501,19 @@ def recall(path: str, topic: str | None, limit: int, min_relevance: float) -> No
     """Surface relevant past knowledge (cross-searches nodes + experiences)."""
     db_path = _resolve_db(path)
 
-    async def _run() -> list:
+    async def _run() -> dict:
         store, intel = await _build_intel_stack(db_path)
         try:
-            return await intel.recall(
+            results = await intel.recall(
                 topic=topic,
                 limit=limit,
                 min_relevance=min_relevance,
             )
+            return {"_v": "1.0", "count": len(results), "results": results}
         finally:
             await store.close()
 
-    results = asyncio.run(_run())
-    click.echo(
-        json.dumps(
-            {"_v": "1.0", "count": len(results), "results": results},
-            default=str,
-        )
-    )
+    _run_json(_run)
 
 
 @main.command()
@@ -519,7 +527,12 @@ def recall(path: str, topic: str | None, limit: int, min_relevance: float) -> No
 )
 @click.option("--limit", default=10, type=click.IntRange(1, 50), help="Max results per section")
 def context(path: str, keywords: str, detail: str, limit: int) -> None:
-    """Get relevant context subgraph (nodes + experiences) with progressive disclosure."""
+    """Get relevant context subgraph (nodes + experiences) with progressive disclosure.
+
+    Note: intelligence.context() returns its own versioned envelope (_v, query,
+    detail, count, nodes, experiences), so this command is a pass-through. The
+    envelope ownership is intentional - engine owns shape, CLI only serializes.
+    """
     db_path = _resolve_db(path)
 
     async def _run() -> dict:
@@ -533,8 +546,7 @@ def context(path: str, keywords: str, detail: str, limit: int) -> None:
         finally:
             await store.close()
 
-    result = asyncio.run(_run())
-    click.echo(json.dumps(result, default=str))
+    _run_json(_run)
 
 
 @main.command()
@@ -557,10 +569,14 @@ def memories(
     limit: int,
     offset: int,
 ) -> None:
-    """Decay-aware experience search."""
+    """Decay-aware experience search.
+
+    Mirrors the kn_memories MCP tool's experience.search() call. Delegates to
+    intel.experience.search() directly (same pattern as server.py kn_memories).
+    """
     db_path = _resolve_db(path)
 
-    async def _run() -> list:
+    async def _run() -> dict:
         store, intel = await _build_intel_stack(db_path)
         try:
             experiences = await intel.experience.search(
@@ -570,7 +586,7 @@ def memories(
                 limit=limit,
                 offset=offset,
             )
-            return [
+            items = [
                 {
                     "id": e.id,
                     "type": e.type,
@@ -581,16 +597,11 @@ def memories(
                 }
                 for e in experiences
             ]
+            return {"_v": "1.0", "count": len(items), "experiences": items}
         finally:
             await store.close()
 
-    items = asyncio.run(_run())
-    click.echo(
-        json.dumps(
-            {"_v": "1.0", "count": len(items), "experiences": items},
-            default=str,
-        )
-    )
+    _run_json(_run)
 
 
 @main.command()
@@ -601,24 +612,15 @@ def crossref(path: str, problem: str, limit: int) -> None:
     """Find similar solutions in the workspace (cross-references nodes + experiences)."""
     db_path = _resolve_db(path)
 
-    async def _run() -> list:
+    async def _run() -> dict:
         store, intel = await _build_intel_stack(db_path)
         try:
-            return await intel.crossref(problem=problem, limit=limit)
+            results = await intel.crossref(problem=problem, limit=limit)
+            return {"_v": "1.0", "count": len(results), "results": results}
         finally:
             await store.close()
 
-    try:
-        results = asyncio.run(_run())
-    except ValueError as e:
-        click.echo(json.dumps({"_v": "1.0", "error": str(e)}), err=True)
-        sys.exit(1)
-    click.echo(
-        json.dumps(
-            {"_v": "1.0", "count": len(results), "results": results},
-            default=str,
-        )
-    )
+    _run_json(_run)
 
 
 @main.command()

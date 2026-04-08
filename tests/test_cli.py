@@ -408,7 +408,11 @@ class TestRoundTrip:
             "oauth2 mobile",
         )
         context_result = json.loads(out)
-        assert context_result["count"] >= 0  # At minimum, no crash
+        assert context_result["_v"] == "1.0"
+        assert "nodes" in context_result
+        assert "experiences" in context_result
+        assert "query" in context_result
+        assert context_result["query"] == "oauth2 mobile"
 
     def test_multiple_learns_appear_in_memories(self, workspace: Path):
         contents = [
