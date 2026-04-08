@@ -116,21 +116,18 @@ async def test_migrate_legacy_experiences_adds_namespace_column(tmp_path):
         )
         row = await cursor.fetchone()
         assert row[0] == "knowledge"
-
-        # Migration is idempotent: re-initializing on the same DB is a no-op
+    finally:
         await store.close()
-        store2 = SQLiteStore(db_path)
-        await store2.initialize()
+
+    # Migration is idempotent: re-initializing on the same DB is a no-op
+    store2 = SQLiteStore(db_path)
+    await store2.initialize()
+    try:
         cursor = await store2.db.execute("SELECT COUNT(*) FROM experiences")
         row = await cursor.fetchone()
         assert row[0] == 3
-        await store2.close()
     finally:
-        # store may already be closed by the idempotency branch above
-        try:
-            await store.close()
-        except Exception:
-            pass
+        await store2.close()
 
 
 # --- Node CRUD ---
