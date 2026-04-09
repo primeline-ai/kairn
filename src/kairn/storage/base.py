@@ -114,6 +114,16 @@ class StorageBackend(ABC):
         """Increment access count and update last_accessed. Returns updated experience."""
 
     @abstractmethod
+    async def touch_accessed_experiences(self, exp_ids: list[str]) -> int:
+        """Batch-increment access_count for multiple experiences in a single UPDATE.
+
+        Used by the intelligence layer read path (recall/context/crossref) so
+        that searching N experiences does not require N round-trips. Returns
+        the number of rows affected. Empty list input must be a no-op that
+        returns 0.
+        """
+
+    @abstractmethod
     async def delete_experience(self, exp_id: str) -> bool:
         """Hard-delete an experience."""
 

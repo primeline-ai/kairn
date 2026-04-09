@@ -253,6 +253,15 @@ class IntelligenceLayer:
             limit=limit,
         )
 
+        # Batch-increment access_count for all returned experiences so
+        # the exp_auto_promote trigger can fire after repeated hits.
+        # Mirror the increment on the in-memory objects so callers reading
+        # exp.access_count from the result set are not off by one.
+        if experiences:
+            await self.experience.touch_accessed([e.id for e in experiences])
+            for exp in experiences:
+                exp.access_count += 1
+
         now = datetime.now(UTC)
         for exp in experiences:
             results.append(
@@ -321,6 +330,12 @@ class IntelligenceLayer:
             min_relevance=0.1,
             limit=limit,
         )
+
+        # Batch-increment access_count for all returned experiences.
+        if experiences:
+            await self.experience.touch_accessed([e.id for e in experiences])
+            for exp in experiences:
+                exp.access_count += 1
 
         now = datetime.now(UTC)
         for exp in experiences:
@@ -410,6 +425,12 @@ class IntelligenceLayer:
             min_relevance=0.1,
             limit=limit,
         )
+
+        # Batch-increment access_count for all returned experiences.
+        if experiences:
+            await self.experience.touch_accessed([e.id for e in experiences])
+            for exp in experiences:
+                exp.access_count += 1
 
         now = datetime.now(UTC)
         exp_items = []

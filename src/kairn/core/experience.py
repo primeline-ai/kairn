@@ -193,6 +193,30 @@ class ExperienceEngine:
         # Apply pagination
         return experiences[offset : offset + limit]
 
+    async def touch_accessed(self, exp_ids: list[str]) -> int:
+        """Batch-increment access_count for a list of experience IDs.
+
+        Used by the intelligence layer read path so that returning N
+        experiences from recall/context/crossref registers N access events
+        in a single SQL round-trip. Fires the `exp_auto_promote` SQL trigger
+        once per row when access_count crosses the threshold (SQLite
+        triggers are always FOR EACH ROW, verified against the schema at
+        `src/kairn/schema/triggers.sql`).
+
+        Empty list is a no-op and returns 0 (the store layer is the
+        load-bearing short-circuit — this wrapper does not pre-filter).
+
+        Unknown IDs in the list are silently ignored (SQL WHERE IN filter).
+
+        This does NOT perform the application-level promotion step (creating
+        a node for a flagged experience). Promotion candidates are picked up
+        later via `get_promotable()` and explicit `access()` calls, or by a
+        background sweeper. The goal here is to keep the hot read path lean.
+
+        Returns the number of rows affected.
+        """
+        return await self.store.touch_accessed_experiences(exp_ids)
+
     async def access(self, exp_id: str) -> Experience | None:
         """Access an experience (increments access count and checks for promotion).
 
