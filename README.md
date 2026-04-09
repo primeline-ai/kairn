@@ -1,5 +1,8 @@
 # Kairn
 
+
+![kairn](assets/hero.png)
+
 > Context-aware knowledge engine for AI assistants.
 
 Other tools give your AI a memory. **Kairn** gives it a knowledge graph with intelligent context routing. It knows what to load, when to load it, and how much — so your AI stays focused, not overwhelmed.
