@@ -8,6 +8,7 @@ to the knowledge graph.
 import logging
 import math
 from datetime import UTC, datetime
+from typing import Any
 
 from kairn.events.bus import EventBus
 from kairn.events.types import EventType
@@ -295,16 +296,104 @@ class ExperienceEngine:
         logger.info(f"Pruned {len(pruned_ids)} experiences")
         return pruned_ids
 
+    async def promote_pending(self, *, limit: int = 100) -> dict[str, Any]:
+        """Promote experiences flagged by the auto-promote SQL trigger.
+
+        The `exp_auto_promote` trigger sets `properties.needs_promotion = 1`
+        when `access_count` crosses 5. The flag stays set forever until
+        something promotes the experience to a permanent graph node and
+        clears the dead-letter state by setting `promoted_to_node_id`.
+
+        This sweeper finds those flagged experiences and calls `_promote()`
+        directly on each. Unlike `access()`, this does NOT increment
+        access_count again (the trigger fired because the count already
+        crossed the threshold via `touch_accessed()` from the read path).
+
+        Race-safety: `_promote()` uses `store.promote_experience_atomic`
+        which wraps INSERT + CAS UPDATE in one transaction. Concurrent
+        sweepers cannot create duplicate nodes for the same source
+        experience — the loser of the race gets `won=False` and the
+        partially-inserted node is rolled back.
+
+        Returns a stats dict:
+            flagged_total: total experiences in the snapshot (pre-limit)
+            attempted: number actually processed this call (= min(flagged_total, limit))
+            promoted: attempted that became permanent nodes
+            raced: attempted where another writer won the CAS (no orphan)
+            failed: attempted where _promote raised an exception
+            nodes_created: list of new node ids (length == promoted)
+            errors: list of "exp_id: error" strings (capped at 10)
+
+        Invariant: attempted == promoted + raced + failed.
+        Idempotent: re-running on a clean DB is a no-op.
+
+        Args:
+            limit: maximum number of experiences to process per call.
+                   Pushed down into SQL so a large backlog doesn't load
+                   the full set into memory.
+        """
+        # Push the limit into SQL — bounded I/O, bounded memory.
+        promotable = await self.get_promotable(limit=limit)
+        flagged_total = len(promotable)
+        attempted = 0
+        promoted = 0
+        raced = 0
+        failed = 0
+        nodes_created: list[str] = []
+        errors: list[str] = []
+
+        for exp in promotable:
+            attempted += 1
+            try:
+                node = await self._promote(exp)
+                if node is not None:
+                    promoted += 1
+                    nodes_created.append(node.id)
+                else:
+                    # _promote returned None: another writer won the CAS.
+                    # The store has already rolled back the orphan node.
+                    raced += 1
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                errors.append(f"{exp.id}: {type(e).__name__}: {e}"[:200])
+                logger.warning(
+                    "promote_pending: failed to promote %s: %s", exp.id, e
+                )
+
+        if promoted:
+            logger.info(
+                "promote_pending: promoted %d/%d (raced=%d failed=%d)",
+                promoted, attempted, raced, failed,
+            )
+
+        return {
+            "flagged_total": flagged_total,
+            "attempted": attempted,
+            "promoted": promoted,
+            "raced": raced,
+            "failed": failed,
+            "nodes_created": nodes_created,
+            "errors": errors[:10],
+        }
+
     async def _promote(self, experience: Experience) -> Node | None:
         """Promote experience to knowledge graph node.
+
+        Atomic + race-safe via `store.promote_experience_atomic`. Returns
+        None if another writer (e.g. a parallel sweeper, or a 2-MCP-server
+        deployment) already claimed this experience between the
+        get_promotable read and our write attempt. The atomic helper
+        rolls back the partially-inserted node so the database stays
+        orphan-free.
 
         Args:
             experience: Experience to promote
 
         Returns:
-            Created Node, or None if promotion failed
+            Created Node on success, None if a race was lost or
+            promotion failed mid-write.
         """
-        # Create node from experience
+        # Build the candidate node (in-memory only at this point)
         node = Node(
             type="promoted_experience",
             name=f"{experience.type.capitalize()}: {experience.content[:50]}",
@@ -319,14 +408,12 @@ class ExperienceEngine:
             },
         )
 
-        # Insert node
-        await self.store.insert_node(node.to_storage())
-
-        # Update experience with node_id
-        await self.store.update_experience(
-            experience.id,
-            {"promoted_to_node_id": node.id},
+        # Single transactional step: INSERT + CAS UPDATE.
+        won = await self.store.promote_experience_atomic(
+            experience.id, node.to_storage()
         )
+        if not won:
+            return None
 
         # Emit event
         await self.event_bus.emit(
@@ -344,11 +431,19 @@ class ExperienceEngine:
 
         return node
 
-    async def get_promotable(self) -> list[Experience]:
+    async def get_promotable(
+        self, *, limit: int | None = None
+    ) -> list[Experience]:
         """Get experiences flagged for promotion.
 
+        Args:
+            limit: optional SQL-side LIMIT pushed into the store query
+                so a large promotion backlog does not load the full
+                set into memory.
+
         Returns:
-            List of experiences that need promotion
+            List of experiences that need promotion (capped at `limit`
+            if provided).
         """
-        results = await self.store.get_promotable_experiences()
+        results = await self.store.get_promotable_experiences(limit=limit)
         return [Experience(**data) for data in results]

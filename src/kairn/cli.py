@@ -895,6 +895,36 @@ def prune(path: str, threshold: float) -> None:
     _run_json(_run)
 
 
+@main.command(name="promote-pending")
+@click.argument("path", type=click.Path(exists=True))
+@click.option(
+    "--limit",
+    default=100,
+    type=click.IntRange(1, 10000),
+    help="Maximum experiences to promote per call",
+)
+def promote_pending(path: str, limit: int) -> None:
+    """Promote experiences flagged by the auto-promote trigger.
+
+    The exp_auto_promote SQL trigger sets needs_promotion=1 when an
+    experience's access_count crosses 5. This command consumes those
+    flags and turns each flagged experience into a permanent graph
+    node via the existing _promote() path. Idempotent: repeatedly
+    safe to call, no-op when nothing is flagged.
+    """
+    db_path = _resolve_db(path)
+
+    async def _run() -> dict:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            stats = await intel.experience.promote_pending(limit=limit)
+            return {"_v": "1.0", **stats}
+        finally:
+            await store.close()
+
+    _run_json(_run)
+
+
 @main.command()
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--name", required=True, help="Project name")

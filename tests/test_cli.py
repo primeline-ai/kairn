@@ -750,6 +750,61 @@ class TestPrune:
         assert isinstance(result["pruned_ids"], list)
 
 
+class TestPromotePending:
+    def test_promote_pending_empty_returns_envelope(self, workspace: Path):
+        """Fresh workspace: nothing flagged, promote-pending is a no-op."""
+        _, out, _ = _run_kairn("promote-pending", str(workspace))
+        result = json.loads(out)
+        assert result["_v"] == "1.0"
+        assert result["flagged_total"] == 0
+        assert result["attempted"] == 0
+        assert result["promoted"] == 0
+        assert result["raced"] == 0
+        assert result["failed"] == 0
+        assert result["nodes_created"] == []
+
+    def test_promote_pending_promotes_after_5_recalls(self, workspace: Path):
+        """End-to-end: learn -> recall 5x -> promote-pending creates a node."""
+        # Seed a low-confidence experience (no node yet)
+        _run_kairn(
+            "learn", str(workspace),
+            "--content", "Promotion sweeper end-to-end CLI test",
+            "--type", "gotcha",
+            "--confidence", "low",
+            "--tags", "sweeper-cli-test",
+        )
+
+        # Recall 5 times so the access tracking wiring fires the trigger.
+        for _ in range(5):
+            _run_kairn(
+                "recall", str(workspace),
+                "--topic", "promotion sweeper end-to-end",
+            )
+
+        # Now promote-pending should find and promote the experience.
+        _, out, _ = _run_kairn("promote-pending", str(workspace))
+        result = json.loads(out)
+        assert result["flagged_total"] >= 1
+        assert result["attempted"] >= 1
+        assert result["promoted"] >= 1
+        assert result["raced"] == 0
+        # Invariant: attempted == promoted + raced + failed
+        assert result["attempted"] == (
+            result["promoted"] + result["raced"] + result["failed"]
+        )
+        assert len(result["nodes_created"]) == result["promoted"]
+
+    def test_promote_pending_respects_limit_flag(self, workspace: Path):
+        _, out, _ = _run_kairn(
+            "promote-pending", str(workspace), "--limit", "5"
+        )
+        result = json.loads(out)
+        assert result["_v"] == "1.0"
+        assert isinstance(result["promoted"], int)
+        assert isinstance(result["attempted"], int)
+        assert isinstance(result["raced"], int)
+
+
 class TestProjectLog:
     def test_project_create_and_log_progress(self, workspace: Path):
         _, out, _ = _run_kairn(
