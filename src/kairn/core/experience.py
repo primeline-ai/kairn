@@ -198,7 +198,9 @@ class ExperienceEngine:
         in a single SQL round-trip. Fires the `exp_auto_promote` SQL trigger
         once per row when access_count crosses the threshold.
 
-        Empty list is a no-op and returns 0 without issuing SQL.
+        Empty list is a no-op and returns 0 (the store layer is the
+        load-bearing short-circuit — this wrapper does not pre-filter).
+
         Unknown IDs in the list are silently ignored (SQL WHERE IN filter).
 
         This does NOT perform the application-level promotion step (creating
@@ -208,8 +210,6 @@ class ExperienceEngine:
 
         Returns the number of rows affected.
         """
-        if not exp_ids:
-            return 0
         return await self.store.touch_accessed_experiences(exp_ids)
 
     async def access(self, exp_id: str) -> Experience | None:
