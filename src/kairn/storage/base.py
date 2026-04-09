@@ -128,8 +128,35 @@ class StorageBackend(ABC):
         """Hard-delete an experience."""
 
     @abstractmethod
-    async def get_promotable_experiences(self) -> list[dict[str, Any]]:
-        """Get experiences flagged for promotion (needs_promotion=1)."""
+    async def get_promotable_experiences(
+        self, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Get experiences flagged for promotion (needs_promotion=1).
+
+        Args:
+            limit: optional SQL-side LIMIT so a large promotion backlog
+                does not load the full set into memory.
+        """
+
+    @abstractmethod
+    async def promote_experience_atomic(
+        self,
+        experience_id: str,
+        node: dict[str, Any],
+    ) -> bool:
+        """Atomically insert a promoted-experience node and CAS-link it.
+
+        Both the INSERT (into nodes) and the UPDATE (linking the source
+        experience via promoted_to_node_id) MUST happen in a single
+        transaction. The UPDATE MUST be conditional on
+        `promoted_to_node_id IS NULL` so concurrent sweepers cannot
+        create duplicate nodes for the same source experience.
+
+        Returns True if this caller won the race and now owns the
+        promotion, False if another writer claimed it first (in which
+        case the implementation MUST roll back its own node insert
+        so the database stays orphan-free).
+        """
 
     # --- Project operations ---
 

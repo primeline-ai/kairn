@@ -562,14 +562,92 @@ class SQLiteStore(StorageBackend):
         rows = await cursor.fetchall()
         return [_row_to_dict(row) for row in rows]
 
-    async def get_promotable_experiences(self) -> list[dict[str, Any]]:
-        cursor = await self.db.execute(
-            """SELECT * FROM experiences
-               WHERE json_extract(properties, '$.needs_promotion') = 1
-               AND promoted_to_node_id IS NULL"""
+    async def get_promotable_experiences(
+        self, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT * FROM experiences "
+            "WHERE json_extract(properties, '$.needs_promotion') = 1 "
+            "AND promoted_to_node_id IS NULL"
         )
+        params: list[Any] = []
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        cursor = await self.db.execute(sql, params)
         rows = await cursor.fetchall()
         return [_row_to_dict(row) for row in rows]
+
+    async def promote_experience_atomic(
+        self,
+        experience_id: str,
+        node: dict[str, Any],
+    ) -> bool:
+        """Insert a promoted_experience node and CAS-link it to the source
+        experience in a SINGLE transaction.
+
+        Returns True if this caller won the race and now owns the
+        promotion. Returns False if another writer has already claimed
+        this experience (the experience already has promoted_to_node_id
+        set, so the conditional UPDATE matches zero rows). On False, the
+        partially-inserted node is rolled back so the database stays
+        consistent — no orphan nodes.
+
+        This closes two latent bugs that the existing two-step
+        `insert_node` + `update_experience` pattern in `_promote()` has:
+            (1) non-atomic: a crash or write failure between the two
+                statements leaves an orphan node with no source link,
+                AND a flagged experience that the next sweeper will
+                process again, creating duplicates.
+            (2) check-then-act race: two concurrent sweepers each see
+                the same flagged experience and each create a node;
+                only the second `promoted_to_node_id` UPDATE wins,
+                the first node becomes an orphan.
+
+        Both bugs are fixed here by:
+            (a) wrapping INSERT + UPDATE in one explicit BEGIN/COMMIT
+                transaction so a write failure rolls back the node
+            (b) using a conditional UPDATE that filters
+                `promoted_to_node_id IS NULL` so the second sweeper
+                gets rowcount=0 and rolls back its own INSERT
+        """
+        # Begin an explicit transaction so the INSERT and UPDATE are
+        # atomic even though aiosqlite usually commits per call.
+        await self.db.execute("BEGIN")
+        try:
+            await self.db.execute(
+                """INSERT INTO nodes (id, namespace, type, name, description,
+                   properties, tags, created_by, visibility, source_type,
+                   source_ref, created_at, updated_at)
+                   VALUES (:id, :namespace, :type, :name, :description,
+                   :properties, :tags, :created_by, :visibility, :source_type,
+                   :source_ref, :created_at, :updated_at)""",
+                _serialize_json_fields(node, ["properties", "tags"]),
+            )
+
+            # Compare-and-swap: only link this node if no other promotion
+            # has won the race in the meantime.
+            cursor = await self.db.execute(
+                """UPDATE experiences
+                   SET promoted_to_node_id = ?
+                   WHERE id = ? AND promoted_to_node_id IS NULL""",
+                (node["id"], experience_id),
+            )
+
+            if cursor.rowcount != 1:
+                # Another writer beat us. Roll back the node insert so
+                # we leave no orphan in the nodes table.
+                await self.db.rollback()
+                return False
+
+            await self.db.commit()
+            return True
+        except Exception:
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
+            raise
 
     # --- Project operations ---
 

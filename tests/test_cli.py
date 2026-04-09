@@ -756,8 +756,10 @@ class TestPromotePending:
         _, out, _ = _run_kairn("promote-pending", str(workspace))
         result = json.loads(out)
         assert result["_v"] == "1.0"
-        assert result["flagged"] == 0
+        assert result["flagged_total"] == 0
+        assert result["attempted"] == 0
         assert result["promoted"] == 0
+        assert result["raced"] == 0
         assert result["failed"] == 0
         assert result["nodes_created"] == []
 
@@ -782,8 +784,14 @@ class TestPromotePending:
         # Now promote-pending should find and promote the experience.
         _, out, _ = _run_kairn("promote-pending", str(workspace))
         result = json.loads(out)
-        assert result["flagged"] >= 1
+        assert result["flagged_total"] >= 1
+        assert result["attempted"] >= 1
         assert result["promoted"] >= 1
+        assert result["raced"] == 0
+        # Invariant: attempted == promoted + raced + failed
+        assert result["attempted"] == (
+            result["promoted"] + result["raced"] + result["failed"]
+        )
         assert len(result["nodes_created"]) == result["promoted"]
 
     def test_promote_pending_respects_limit_flag(self, workspace: Path):
@@ -793,6 +801,8 @@ class TestPromotePending:
         result = json.loads(out)
         assert result["_v"] == "1.0"
         assert isinstance(result["promoted"], int)
+        assert isinstance(result["attempted"], int)
+        assert isinstance(result["raced"], int)
 
 
 class TestProjectLog:

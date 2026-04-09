@@ -748,8 +748,10 @@ class TestPromotePending:
     async def test_promote_pending_no_flagged_returns_zero(self, engine):
         """No flagged experiences -> stats all zero, no errors."""
         result = await engine.promote_pending()
-        assert result["flagged"] == 0
+        assert result["flagged_total"] == 0
+        assert result["attempted"] == 0
         assert result["promoted"] == 0
+        assert result["raced"] == 0
         assert result["failed"] == 0
         assert result["nodes_created"] == []
         assert result["errors"] == []
@@ -774,9 +776,15 @@ class TestPromotePending:
 
         # Sweep.
         result = await engine.promote_pending()
-        assert result["flagged"] >= 1
+        assert result["flagged_total"] >= 1
+        assert result["attempted"] >= 1
         assert result["promoted"] >= 1
+        assert result["raced"] == 0
         assert result["failed"] == 0
+        # Invariant: attempted == promoted + raced + failed
+        assert result["attempted"] == (
+            result["promoted"] + result["raced"] + result["failed"]
+        )
         assert len(result["nodes_created"]) == result["promoted"]
 
         # Post-sweep: experience has promoted_to_node_id set, so it's
@@ -812,8 +820,10 @@ class TestPromotePending:
         """Re-running on a clean DB is a no-op."""
         await engine.promote_pending()
         result = await engine.promote_pending()
-        assert result["flagged"] == 0
+        assert result["flagged_total"] == 0
+        assert result["attempted"] == 0
         assert result["promoted"] == 0
+        assert result["raced"] == 0
 
     @pytest.mark.asyncio
     async def test_promote_pending_does_not_double_promote(self, engine):
@@ -830,7 +840,8 @@ class TestPromotePending:
 
         # Run sweep again — same experience must NOT promote a second time.
         second = await engine.promote_pending()
-        assert second["flagged"] == 0
+        assert second["flagged_total"] == 0
+        assert second["attempted"] == 0
         assert second["promoted"] == 0
 
         # Verify node count for this exp didn't double.
@@ -839,7 +850,12 @@ class TestPromotePending:
 
     @pytest.mark.asyncio
     async def test_promote_pending_respects_limit(self, engine):
-        """Sweep with limit=N promotes at most N flagged experiences."""
+        """Sweep with limit=N promotes at most N flagged experiences.
+
+        Limit is now pushed into SQL via get_promotable(limit=N), so
+        flagged_total reflects the SQL-bounded snapshot, not the full
+        backlog. attempted == promoted == limit.
+        """
         flagged_ids = []
         for i in range(5):
             exp = await engine.save(
@@ -852,8 +868,11 @@ class TestPromotePending:
             flagged_ids.append(exp.id)
 
         result = await engine.promote_pending(limit=3)
-        assert result["flagged"] >= 5  # all 5 are findable
-        assert result["promoted"] == 3  # but only 3 processed this call
+        # flagged_total is the SQL-bounded snapshot (limit=3), not all 5.
+        assert result["flagged_total"] == 3
+        assert result["attempted"] == 3
+        assert result["promoted"] == 3
+        assert result["raced"] == 0
 
         # 2 should remain flagged for the next sweep.
         remaining = await engine.store.get_promotable_experiences()
@@ -881,3 +900,149 @@ class TestPromotePending:
         after = (await engine.get(exp.id)).access_count
 
         assert after == before  # promotion is NOT another read
+
+    async def _insert_winner_node(self, store, node_id: str = "winner-node-id"):
+        """Insert a real node so the experiences.promoted_to_node_id FK
+        constraint is satisfied when we simulate a race winner."""
+        winner = {
+            "id": node_id,
+            "namespace": "knowledge",
+            "type": "promoted_experience",
+            "name": "Race winner",
+            "description": "pre-existing winner that beat the loser",
+            "properties": {},
+            "tags": [],
+            "created_by": None,
+            "visibility": "private",
+            "source_type": "promotion",
+            "source_ref": None,
+            "created_at": "2026-04-09T00:00:00",
+            "updated_at": "2026-04-09T00:00:00",
+        }
+        await store.insert_node(winner)
+        return node_id
+
+    @pytest.mark.asyncio
+    async def test_promote_atomic_returns_false_when_already_claimed(
+        self, engine, store
+    ):
+        """promote_experience_atomic must return False (and roll back the
+        node insert) when the experience already has promoted_to_node_id
+        set, simulating another writer winning the race.
+        """
+        exp = await engine.save(
+            content="already claimed by another writer",
+            type="solution",
+            confidence="high",
+        )
+
+        # Insert a real winner node and pre-claim the experience.
+        winner_id = await self._insert_winner_node(store, "winner-node-1")
+        await store.update_experience(
+            exp.id, {"promoted_to_node_id": winner_id}
+        )
+
+        # Now try to promote — the CAS UPDATE should match zero rows.
+        candidate = {
+            "id": "loser-node-id",
+            "namespace": "knowledge",
+            "type": "promoted_experience",
+            "name": "Loser node",
+            "description": "this should never appear",
+            "properties": {},
+            "tags": [],
+            "created_by": None,
+            "visibility": "private",
+            "source_type": "promotion",
+            "source_ref": None,
+            "created_at": "2026-04-09T00:00:00",
+            "updated_at": "2026-04-09T00:00:00",
+        }
+        won = await store.promote_experience_atomic(exp.id, candidate)
+        assert won is False
+
+        # The "loser" node MUST NOT exist in the nodes table — the
+        # transaction was rolled back.
+        loser = await store.get_node("loser-node-id")
+        assert loser is None
+
+        # The experience still has the winner's id, untouched.
+        refreshed = await engine.get(exp.id)
+        assert refreshed.promoted_to_node_id == winner_id
+
+    @pytest.mark.asyncio
+    async def test_promote_pending_skips_already_claimed_experiences(
+        self, engine, store
+    ):
+        """An experience that is already claimed (promoted_to_node_id set)
+        is filtered out by get_promotable_experiences. The sweep must
+        treat it as a no-op, not crash, not double-promote."""
+        exp = await engine.save(
+            content="pre-claimed experience",
+            type="gotcha",
+            confidence="high",
+        )
+        # Flag it.
+        for _ in range(5):
+            await engine.touch_accessed([exp.id])
+
+        # Pre-claim with a real winner node.
+        winner_id = await self._insert_winner_node(store, "winner-node-2")
+        await store.update_experience(
+            exp.id, {"promoted_to_node_id": winner_id}
+        )
+
+        # Sweep — exp is already linked, so get_promotable returns empty
+        # for it (filtered by promoted_to_node_id IS NULL).
+        result = await engine.promote_pending()
+        assert result["flagged_total"] == 0
+        assert result["attempted"] == 0
+        assert result["promoted"] == 0
+        assert result["raced"] == 0
+
+        # The pre-claim is intact.
+        refreshed = await engine.get(exp.id)
+        assert refreshed.promoted_to_node_id == winner_id
+
+    @pytest.mark.asyncio
+    async def test_promote_atomic_keeps_db_consistent_on_loser_path(
+        self, engine, store
+    ):
+        """Holistic check on the loser path: nodes table count must NOT
+        grow when promote_experience_atomic returns False (rollback
+        reverts the partial INSERT)."""
+        exp = await engine.save(content="cas test", type="gotcha", confidence="high")
+        winner_id = await self._insert_winner_node(store, "winner-node-3")
+        await store.update_experience(
+            exp.id, {"promoted_to_node_id": winner_id}
+        )
+
+        # Count nodes before
+        before_rows = await store.query_nodes(limit=100000)
+        before_count = len(before_rows)
+
+        candidate = {
+            "id": "should-be-rolled-back",
+            "namespace": "knowledge",
+            "type": "promoted_experience",
+            "name": "rolled back",
+            "description": "x",
+            "properties": {},
+            "tags": [],
+            "created_by": None,
+            "visibility": "private",
+            "source_type": "promotion",
+            "source_ref": None,
+            "created_at": "2026-04-09T00:00:00",
+            "updated_at": "2026-04-09T00:00:00",
+        }
+        won = await store.promote_experience_atomic(exp.id, candidate)
+        assert won is False
+
+        # Count nodes after — must be unchanged (rollback successful).
+        after_rows = await store.query_nodes(limit=100000)
+        assert len(after_rows) == before_count
+
+        # The "should-be-rolled-back" node must NOT exist.
+        rolled = await store.get_node("should-be-rolled-back")
+        assert rolled is None
