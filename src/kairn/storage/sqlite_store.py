@@ -461,6 +461,27 @@ class SQLiteStore(StorageBackend):
             return None
         return await self.get_experience(exp_id)
 
+    async def touch_accessed_experiences(self, exp_ids: list[str]) -> int:
+        """Batch UPDATE of access_count + last_accessed for a list of IDs.
+
+        Single SQL statement so it fires the `exp_auto_promote` trigger once
+        per row in one pass. Empty list is a no-op.
+        """
+        if not exp_ids:
+            return 0
+        placeholders = ",".join("?" * len(exp_ids))
+        # Placeholders are generated from len(exp_ids) only, never from user
+        # input — this is safe parameterized SQL.
+        cursor = await self.db.execute(
+            f"""UPDATE experiences
+                SET access_count = access_count + 1,
+                    last_accessed = datetime('now')
+                WHERE id IN ({placeholders})""",
+            list(exp_ids),
+        )
+        await self.db.commit()
+        return cursor.rowcount or 0
+
     async def delete_experience(self, exp_id: str) -> bool:
         cursor = await self.db.execute("DELETE FROM experiences WHERE id = ?", (exp_id,))
         await self.db.commit()

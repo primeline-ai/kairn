@@ -580,3 +580,100 @@ async def test_promoted_experience_not_promoted_again(engine):
     # Access again - should not create new node
     exp = await engine.access(exp.id)
     assert exp.promoted_to_node_id == first_node_id
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Batch access tracking
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestTouchAccessed:
+    """Batch access tracking used by intelligence layer read path."""
+
+    @pytest.mark.asyncio
+    async def test_touch_accessed_single_id(self, engine):
+        """Single-ID batch call increments access_count and last_accessed."""
+        exp = await engine.save(
+            content="touch accessed single",
+            type="gotcha",
+            confidence="high",
+        )
+        assert exp.access_count == 0
+
+        await engine.touch_accessed([exp.id])
+
+        updated = await engine.get(exp.id)
+        assert updated.access_count == 1
+        assert updated.last_accessed is not None
+
+    @pytest.mark.asyncio
+    async def test_touch_accessed_multiple_ids(self, engine):
+        """Multi-ID batch call increments all targeted experiences."""
+        ids = []
+        for i in range(4):
+            exp = await engine.save(
+                content=f"batch-touch-{i}",
+                type="pattern",
+                confidence="high",
+            )
+            ids.append(exp.id)
+
+        await engine.touch_accessed(ids)
+
+        for exp_id in ids:
+            updated = await engine.get(exp_id)
+            assert updated.access_count == 1
+
+    @pytest.mark.asyncio
+    async def test_touch_accessed_empty_list_noop(self, engine):
+        """Empty list must not issue SQL and must not crash."""
+        # This must be safe to call even when no experiences were matched.
+        result = await engine.touch_accessed([])
+        assert result == 0  # rows affected count
+
+    @pytest.mark.asyncio
+    async def test_touch_accessed_nonexistent_id_tolerated(self, engine):
+        """Passing an unknown ID alongside real ones affects only the real."""
+        exp = await engine.save(
+            content="real experience",
+            type="gotcha",
+            confidence="high",
+        )
+        assert exp.access_count == 0
+
+        # Mix real ID with fake ones.
+        await engine.touch_accessed([exp.id, "nonexistent-aaa", "nonexistent-bbb"])
+
+        updated = await engine.get(exp.id)
+        assert updated.access_count == 1
+
+    @pytest.mark.asyncio
+    async def test_touch_accessed_repeated_calls_compound(self, engine):
+        """Calling touch_accessed N times increments count by N."""
+        exp = await engine.save(
+            content="repeated touch",
+            type="gotcha",
+            confidence="high",
+        )
+
+        for _ in range(3):
+            await engine.touch_accessed([exp.id])
+
+        updated = await engine.get(exp.id)
+        assert updated.access_count == 3
+
+    @pytest.mark.asyncio
+    async def test_touch_accessed_5_triggers_promotion_flag(self, engine):
+        """The SQL trigger exp_auto_promote fires at access_count >= 5."""
+        exp = await engine.save(
+            content="touch triggers promotion",
+            type="gotcha",
+            confidence="high",
+        )
+
+        # 5 touches in a batch (same experience, repeated).
+        for _ in range(5):
+            await engine.touch_accessed([exp.id])
+
+        promotable = await engine.store.get_promotable_experiences()
+        assert any(p["id"] == exp.id for p in promotable)

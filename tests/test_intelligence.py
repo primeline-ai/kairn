@@ -523,3 +523,145 @@ class TestRealConversation:
         assert r1["stored_as"] == "node"
         assert r2["stored_as"] == "experience"
         assert r3["stored_as"] == "experience"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Access tracking wiring
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestAccessTracking:
+    """Verify recall/context/crossref increment access_count on returned
+    experiences. This is what activates the promotion pipeline: without
+    the wiring, access_count stays 0 forever and the SQL auto-promote
+    trigger never fires.
+    """
+
+    async def _seed_experience(self, engine, content: str, tags=None):
+        """Helper: create a low-confidence experience (experience only, no node)."""
+        await engine.learn(
+            content=content,
+            type="gotcha",
+            confidence="low",
+            tags=tags or [],
+        )
+
+    async def _get_experience_access_count(self, engine, content_substr: str) -> int:
+        """Find an experience by content substring and return its access_count."""
+        all_exps = await engine.experience.search(text=None, limit=100)
+        for exp in all_exps:
+            if content_substr in exp.content:
+                return exp.access_count
+        raise AssertionError(f"experience with {content_substr!r} not found")
+
+    @pytest.mark.asyncio
+    async def test_recall_increments_access_count(self, engine: IntelligenceLayer):
+        """recall() should touch every returned experience's access_count."""
+        await self._seed_experience(
+            engine,
+            "Kafka partitions must match consumer count for parallelism",
+            tags=["kafka", "partitions"],
+        )
+        before = await self._get_experience_access_count(engine, "Kafka partitions")
+        assert before == 0
+
+        results = await engine.recall(topic="kafka partitions consumer")
+        # Should surface at least the experience we just seeded.
+        assert any("Kafka" in r.get("content", "") for r in results
+                   if r.get("source") == "experience")
+
+        after = await self._get_experience_access_count(engine, "Kafka partitions")
+        assert after == 1
+
+    @pytest.mark.asyncio
+    async def test_context_increments_access_count(self, engine: IntelligenceLayer):
+        """context() should touch every returned experience's access_count."""
+        await self._seed_experience(
+            engine,
+            "gRPC streaming requires keepalive tuning for long-lived connections",
+            tags=["grpc", "keepalive"],
+        )
+        before = await self._get_experience_access_count(engine, "gRPC streaming")
+        assert before == 0
+
+        result = await engine.context(keywords="grpc keepalive streaming")
+        assert any("gRPC" in e.get("content", "")
+                   for e in result.get("experiences", []))
+
+        after = await self._get_experience_access_count(engine, "gRPC streaming")
+        assert after == 1
+
+    @pytest.mark.asyncio
+    async def test_crossref_increments_access_count(self, engine: IntelligenceLayer):
+        """crossref() should touch every returned experience's access_count."""
+        await self._seed_experience(
+            engine,
+            "Use bounded queues for backpressure under burst load",
+            tags=["queue", "backpressure"],
+        )
+        before = await self._get_experience_access_count(
+            engine, "bounded queues for backpressure"
+        )
+        assert before == 0
+
+        results = await engine.crossref(problem="burst load overflow backpressure queue")
+        assert any("bounded queues" in r.get("content", "")
+                   for r in results if r.get("source") == "experience")
+
+        after = await self._get_experience_access_count(
+            engine, "bounded queues for backpressure"
+        )
+        assert after == 1
+
+    @pytest.mark.asyncio
+    async def test_5_recalls_trigger_promotion_flag(self, engine: IntelligenceLayer):
+        """After 5 recall hits on the same experience, the SQL trigger
+        exp_auto_promote should set properties.needs_promotion = 1."""
+        await self._seed_experience(
+            engine,
+            "Always set SO_REUSEADDR before bind for fast socket reuse",
+            tags=["sockets", "bind", "tcp"],
+        )
+
+        for _ in range(5):
+            results = await engine.recall(
+                topic="sockets bind SO_REUSEADDR fast reuse"
+            )
+            # Confirm the experience is actually being matched each time,
+            # otherwise the test is vacuous.
+            assert any("SO_REUSEADDR" in r.get("content", "")
+                       for r in results if r.get("source") == "experience")
+
+        count = await self._get_experience_access_count(engine, "SO_REUSEADDR")
+        assert count == 5
+
+        # Check the promotion flag via store directly.
+        promotable = await engine.experience.store.get_promotable_experiences()
+        assert any("SO_REUSEADDR" in p.get("content", "") for p in promotable), \
+            f"expected SO_REUSEADDR experience to be flagged promotable, " \
+            f"got {[p.get('content','')[:50] for p in promotable]}"
+
+    @pytest.mark.asyncio
+    async def test_empty_experience_list_no_sql_issued(
+        self, engine: IntelligenceLayer, monkeypatch
+    ):
+        """Recall with no experience hits must not issue a batch UPDATE
+        with an empty IN clause (would generate a syntax error on some
+        SQLite versions and wastes a round-trip)."""
+        calls = []
+        original = engine.experience.touch_accessed
+
+        async def spy(exp_ids):
+            calls.append(list(exp_ids))
+            return await original(exp_ids)
+
+        monkeypatch.setattr(engine.experience, "touch_accessed", spy)
+
+        # Nothing in the DB yet -> recall returns empty experience list.
+        await engine.recall(topic="completely_nonexistent_xyz999")
+
+        # Either touch_accessed was never called (most efficient) or it
+        # was called with an empty list (also acceptable). Either way,
+        # no SQL IN () syntax error.
+        for call in calls:
+            assert call == []  # if called at all, must be with empty list
