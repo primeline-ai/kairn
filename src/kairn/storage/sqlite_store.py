@@ -471,7 +471,10 @@ class SQLiteStore(StorageBackend):
             return 0
         placeholders = ",".join("?" * len(exp_ids))
         # Placeholders are generated from len(exp_ids) only, never from user
-        # input — this is safe parameterized SQL.
+        # input — this is safe parameterized SQL. SQLite's host-parameter
+        # limit is 32766 (SQLITE_MAX_VARIABLE_NUMBER) on modern builds;
+        # if typical call sites ever exceed ~10k IDs in a single batch,
+        # chunk the list before calling.
         cursor = await self.db.execute(
             f"""UPDATE experiences
                 SET access_count = access_count + 1,

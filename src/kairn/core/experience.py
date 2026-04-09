@@ -196,7 +196,9 @@ class ExperienceEngine:
         Used by the intelligence layer read path so that returning N
         experiences from recall/context/crossref registers N access events
         in a single SQL round-trip. Fires the `exp_auto_promote` SQL trigger
-        once per row when access_count crosses the threshold.
+        once per row when access_count crosses the threshold (SQLite
+        triggers are always FOR EACH ROW, verified against the schema at
+        `src/kairn/schema/triggers.sql`).
 
         Empty list is a no-op and returns 0 (the store layer is the
         load-bearing short-circuit — this wrapper does not pre-filter).

@@ -645,9 +645,12 @@ class TestAccessTracking:
     async def test_empty_experience_list_no_sql_issued(
         self, engine: IntelligenceLayer, monkeypatch
     ):
-        """Recall with no experience hits must not issue a batch UPDATE
-        with an empty IN clause (would generate a syntax error on some
-        SQLite versions and wastes a round-trip)."""
+        """Recall with no experience hits must never pass a non-empty
+        list to touch_accessed. Defense in depth: even if the guard at
+        the intelligence layer is removed, the store layer also short-
+        circuits on empty lists (see sqlite_store.touch_accessed_
+        experiences). This test pins the intelligence-layer contract
+        by asserting the spy only observed empty-or-no calls."""
         calls = []
         original = engine.experience.touch_accessed
 
