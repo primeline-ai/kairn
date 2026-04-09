@@ -730,3 +730,154 @@ class TestTouchAccessed:
 
         promotable = await engine.store.get_promotable_experiences()
         assert any(p["id"] == exp.id for p in promotable)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Promotion sweeper
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestPromotePending:
+    """Sweeper that consumes the needs_promotion flag set by the
+    exp_auto_promote SQL trigger and turns flagged experiences into
+    permanent graph nodes. Without this sweeper, the flag is set but
+    never acted on - experiences would stay flagged forever.
+    """
+
+    @pytest.mark.asyncio
+    async def test_promote_pending_no_flagged_returns_zero(self, engine):
+        """No flagged experiences -> stats all zero, no errors."""
+        result = await engine.promote_pending()
+        assert result["flagged"] == 0
+        assert result["promoted"] == 0
+        assert result["failed"] == 0
+        assert result["nodes_created"] == []
+        assert result["errors"] == []
+
+    @pytest.mark.asyncio
+    async def test_promote_pending_promotes_single_flagged(self, engine):
+        """A flagged experience becomes a permanent node and is no
+        longer in the promotable set after the sweep."""
+        exp = await engine.save(
+            content="solution worth promoting",
+            type="solution",
+            confidence="high",
+        )
+
+        # Flag it via 5 touch_accessed calls (trigger fires at >=5).
+        for _ in range(5):
+            await engine.touch_accessed([exp.id])
+
+        # Pre-sweep: should be in promotable set.
+        pre = await engine.store.get_promotable_experiences()
+        assert any(p["id"] == exp.id for p in pre)
+
+        # Sweep.
+        result = await engine.promote_pending()
+        assert result["flagged"] >= 1
+        assert result["promoted"] >= 1
+        assert result["failed"] == 0
+        assert len(result["nodes_created"]) == result["promoted"]
+
+        # Post-sweep: experience has promoted_to_node_id set, so it's
+        # no longer in the promotable set.
+        refreshed = await engine.get(exp.id)
+        assert refreshed.promoted_to_node_id is not None
+        assert refreshed.promoted_to_node_id in result["nodes_created"]
+
+    @pytest.mark.asyncio
+    async def test_promote_pending_creates_promoted_experience_node(self, engine):
+        """Sweep produces a node with type='promoted_experience' that
+        carries the source experience metadata."""
+        exp = await engine.save(
+            content="pattern X always wins under load",
+            type="pattern",
+            confidence="high",
+            tags=["load-test", "pattern-x"],
+        )
+        for _ in range(5):
+            await engine.touch_accessed([exp.id])
+
+        result = await engine.promote_pending()
+        assert result["promoted"] == 1
+        node_id = result["nodes_created"][0]
+        node = await engine.store.get_node(node_id)
+        assert node is not None
+        assert node["type"] == "promoted_experience"
+        # Properties carry the source experience ID for traceability.
+        assert "source_experience_id" in str(node)
+
+    @pytest.mark.asyncio
+    async def test_promote_pending_idempotent(self, engine):
+        """Re-running on a clean DB is a no-op."""
+        await engine.promote_pending()
+        result = await engine.promote_pending()
+        assert result["flagged"] == 0
+        assert result["promoted"] == 0
+
+    @pytest.mark.asyncio
+    async def test_promote_pending_does_not_double_promote(self, engine):
+        """Already-promoted experiences are not in the promotable set
+        because get_promotable_experiences filters
+        promoted_to_node_id IS NULL."""
+        exp = await engine.save(content="x", type="gotcha", confidence="high")
+        for _ in range(5):
+            await engine.touch_accessed([exp.id])
+
+        first = await engine.promote_pending()
+        assert first["promoted"] == 1
+        first_node_id = first["nodes_created"][0]
+
+        # Run sweep again — same experience must NOT promote a second time.
+        second = await engine.promote_pending()
+        assert second["flagged"] == 0
+        assert second["promoted"] == 0
+
+        # Verify node count for this exp didn't double.
+        refreshed = await engine.get(exp.id)
+        assert refreshed.promoted_to_node_id == first_node_id
+
+    @pytest.mark.asyncio
+    async def test_promote_pending_respects_limit(self, engine):
+        """Sweep with limit=N promotes at most N flagged experiences."""
+        flagged_ids = []
+        for i in range(5):
+            exp = await engine.save(
+                content=f"flagged item {i}",
+                type="gotcha",
+                confidence="high",
+            )
+            for _ in range(5):
+                await engine.touch_accessed([exp.id])
+            flagged_ids.append(exp.id)
+
+        result = await engine.promote_pending(limit=3)
+        assert result["flagged"] >= 5  # all 5 are findable
+        assert result["promoted"] == 3  # but only 3 processed this call
+
+        # 2 should remain flagged for the next sweep.
+        remaining = await engine.store.get_promotable_experiences()
+        assert len(remaining) == 2
+
+        # A second sweep finishes the rest.
+        result2 = await engine.promote_pending()
+        assert result2["promoted"] == 2
+
+        # Now everything is promoted.
+        final = await engine.store.get_promotable_experiences()
+        assert len(final) == 0
+
+    @pytest.mark.asyncio
+    async def test_promote_pending_does_not_increment_access_count(self, engine):
+        """The sweep is a one-shot promote, NOT another access. The
+        access_count must NOT change as a side effect of sweeping
+        (touch_accessed already counted those reads)."""
+        exp = await engine.save(content="x", type="pattern", confidence="high")
+        for _ in range(5):
+            await engine.touch_accessed([exp.id])
+
+        before = (await engine.get(exp.id)).access_count
+        await engine.promote_pending()
+        after = (await engine.get(exp.id)).access_count
+
+        assert after == before  # promotion is NOT another read

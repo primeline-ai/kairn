@@ -586,6 +586,37 @@ def create_server(db_path: str) -> FastMCP:
             }
         )
 
+    @mcp.tool()
+    async def kn_promote_pending(
+        limit: Annotated[
+            int,
+            Field(
+                description=(
+                    "Maximum experiences to promote in this call. "
+                    "Bounds a single sweep so it cannot block on a "
+                    "large promotion backlog."
+                ),
+                ge=1,
+                le=10000,
+            ),
+        ] = 100,
+    ) -> str:
+        """Promote experiences flagged by the auto-promote SQL trigger.
+
+        The exp_auto_promote trigger sets needs_promotion=1 when an
+        experience's access_count crosses 5 (via the read-path
+        touch_accessed wiring from Phase 8). This tool consumes those
+        flags and turns each flagged experience into a permanent graph
+        node via the existing _promote() path.
+
+        Idempotent: repeatedly safe to call; no-op when nothing is
+        flagged. Returns stats including the list of newly created
+        node ids.
+        """
+        s = await _init()
+        stats = await s["experience"].promote_pending(limit=limit)
+        return _json({"_v": "1.0", **stats})
+
     # ── Idea tools (2) ───────────────────────────────────────
 
     @mcp.tool()

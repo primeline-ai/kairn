@@ -8,6 +8,7 @@ to the knowledge graph.
 import logging
 import math
 from datetime import UTC, datetime
+from typing import Any
 
 from kairn.events.bus import EventBus
 from kairn.events.types import EventType
@@ -294,6 +295,70 @@ class ExperienceEngine:
 
         logger.info(f"Pruned {len(pruned_ids)} experiences")
         return pruned_ids
+
+    async def promote_pending(self, *, limit: int = 100) -> dict[str, Any]:
+        """Promote experiences flagged by the auto-promote SQL trigger.
+
+        The `exp_auto_promote` trigger sets `properties.needs_promotion = 1`
+        when `access_count` crosses 5. The flag stays set forever until
+        something promotes the experience to a permanent graph node and
+        clears the dead-letter state by setting `promoted_to_node_id`.
+
+        This sweeper finds those flagged experiences and calls `_promote()`
+        directly on each. Unlike `access()`, this does NOT increment
+        access_count again (the trigger fired because the count already
+        crossed the threshold via `touch_accessed()` from the read path).
+
+        Returns a stats dict:
+            flagged: number of experiences found in the promotable set
+            promoted: number successfully turned into nodes
+            failed: number where _promote raised
+            nodes_created: list of new node ids
+            errors: list of "exp_id: error" strings (capped at 10)
+
+        Idempotent: re-running on a clean DB is a no-op (zero flagged).
+
+        Args:
+            limit: maximum number of experiences to process per call.
+                   Used to bound a single sweep so it cannot block the
+                   caller indefinitely on a large promotion backlog.
+        """
+        promotable = await self.get_promotable()
+        flagged = len(promotable)
+        promoted = 0
+        failed = 0
+        nodes_created: list[str] = []
+        errors: list[str] = []
+
+        for exp in promotable[:limit]:
+            try:
+                node = await self._promote(exp)
+                if node is not None:
+                    promoted += 1
+                    nodes_created.append(node.id)
+                else:
+                    failed += 1
+                    errors.append(f"{exp.id}: _promote returned None")
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                errors.append(f"{exp.id}: {type(e).__name__}: {e}"[:200])
+                logger.warning(
+                    "promote_pending: failed to promote %s: %s", exp.id, e
+                )
+
+        if promoted:
+            logger.info(
+                "promote_pending: promoted %d/%d flagged experiences",
+                promoted, flagged,
+            )
+
+        return {
+            "flagged": flagged,
+            "promoted": promoted,
+            "failed": failed,
+            "nodes_created": nodes_created,
+            "errors": errors[:10],
+        }
 
     async def _promote(self, experience: Experience) -> Node | None:
         """Promote experience to knowledge graph node.
