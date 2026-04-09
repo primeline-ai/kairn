@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS edges (
 -- Experiences (temporal, decaying)
 CREATE TABLE IF NOT EXISTS experiences (
     id TEXT PRIMARY KEY,
+    namespace TEXT NOT NULL DEFAULT 'knowledge',
     type TEXT NOT NULL,
     content TEXT NOT NULL,
     context TEXT,

@@ -30,6 +30,7 @@ _ALLOWED_COLUMNS: dict[str, set[str]] = {
         "deleted_at",
     },
     "experiences": {
+        "namespace",
         "type",
         "content",
         "context",
@@ -102,8 +103,48 @@ class SQLiteStore(StorageBackend):
         triggers_sql = _load_sql("triggers.sql")
         await self._db.executescript(triggers_sql)
 
+        # Idempotent migrations for pre-existing databases
+        await self._migrate_schema()
+
         await self._db.commit()
         logger.info("Initialized SQLite store at %s", self.db_path)
+
+    async def _migrate_schema(self) -> None:
+        """Apply idempotent schema migrations for older databases.
+
+        Each migration checks current state before acting so running on a
+        fresh DB (where CREATE TABLE already includes the column) is a no-op.
+
+        Concurrency assumption: Kairn runs single-process per workspace
+        (each MCP server / CLI invocation owns its own SQLite connection).
+        The PRAGMA-check then ALTER-TABLE window is not guarded beyond
+        SQLite's own write serialization, so simultaneous init of a fresh
+        legacy DB from two processes could theoretically race. Not
+        exploitable under current deployment shape — flagged for the
+        future if multi-writer init becomes a thing.
+        """
+        assert self._db is not None
+
+        # Migration: experiences.namespace (added 2026-04-09)
+        cursor = await self._db.execute("PRAGMA table_info(experiences)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "namespace" not in columns:
+            logger.info("Migrating experiences: adding namespace column")
+            # SQLite rejects NOT NULL on ALTER TABLE ADD COLUMN unless the
+            # default is non-null — which 'knowledge' is, so this is safe.
+            await self._db.execute(
+                "ALTER TABLE experiences ADD COLUMN namespace TEXT NOT NULL "
+                "DEFAULT 'knowledge'"
+            )
+
+        # Always ensure the namespace index exists (idempotent on fresh and
+        # migrated DBs). The CREATE INDEX was intentionally removed from
+        # workspace.sql so legacy DBs can be migrated without the initial
+        # executescript failing on a missing column.
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_experiences_namespace "
+            "ON experiences(namespace)"
+        )
 
     async def close(self) -> None:
         if self._db:
@@ -339,17 +380,21 @@ class SQLiteStore(StorageBackend):
     # --- Experience operations ---
 
     async def insert_experience(self, experience: dict[str, Any]) -> dict[str, Any]:
+        # Ensure namespace is always present (defaults to 'knowledge' for
+        # callers that pre-date the namespace migration).
+        payload = dict(experience)
+        payload.setdefault("namespace", "knowledge")
         await self.db.execute(
-            """INSERT INTO experiences (id, type, content, context, confidence, score,
+            """INSERT INTO experiences (id, namespace, type, content, context, confidence, score,
                decay_rate, tags, properties, created_by, access_count, promoted_to_node_id,
                created_at, last_accessed)
-               VALUES (:id, :type, :content, :context, :confidence, :score,
+               VALUES (:id, :namespace, :type, :content, :context, :confidence, :score,
                :decay_rate, :tags, :properties, :created_by, :access_count, :promoted_to_node_id,
                :created_at, :last_accessed)""",
-            _serialize_json_fields(experience, ["tags", "properties"]),
+            _serialize_json_fields(payload, ["tags", "properties"]),
         )
         await self.db.commit()
-        return experience
+        return payload
 
     async def get_experience(self, exp_id: str) -> dict[str, Any] | None:
         cursor = await self.db.execute("SELECT * FROM experiences WHERE id = ?", (exp_id,))
@@ -465,6 +510,33 @@ class SQLiteStore(StorageBackend):
         cursor = await self.db.execute("DELETE FROM experiences WHERE id = ?", (exp_id,))
         await self.db.commit()
         return cursor.rowcount > 0
+
+    async def query_experiences_since(
+        self,
+        since: str,
+        *,
+        namespace: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Return experiences created at or after `since` (ISO-8601 UTC string).
+
+        Used by the `kairn query --since` CLI subcommand that powers
+        bidirectional sync between Kairn workspaces. Returns newest first.
+        """
+        conditions = ["created_at >= ?"]
+        params: list[Any] = [since]
+        if namespace:
+            conditions.append("namespace = ?")
+            params.append(namespace)
+        where = " AND ".join(conditions)
+        params.append(limit)
+        cursor = await self.db.execute(
+            f"SELECT * FROM experiences WHERE {where} "
+            f"ORDER BY created_at DESC LIMIT ?",
+            params,
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(row) for row in rows]
 
     async def get_promotable_experiences(self) -> list[dict[str, Any]]:
         cursor = await self.db.execute(

@@ -67,6 +67,7 @@ class ExperienceEngine:
         context: str | None = None,
         confidence: str = "high",
         tags: list[str] | None = None,
+        namespace: str = "knowledge",
     ) -> Experience:
         """Save a new experience.
 
@@ -76,6 +77,7 @@ class ExperienceEngine:
             context: Optional context information
             confidence: Confidence level (must be in VALID_CONFIDENCES)
             tags: Optional tags
+            namespace: Namespace for multi-tenant isolation (default "knowledge")
 
         Returns:
             Created Experience
@@ -104,6 +106,7 @@ class ExperienceEngine:
 
         # Create experience
         exp = Experience(
+            namespace=namespace,
             type=type,
             content=content,
             context=context,

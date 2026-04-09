@@ -723,6 +723,13 @@ def create_server(db_path: str) -> FastMCP:
             list[str] | None,
             Field(description="Tags for categorization"),
         ] = None,
+        namespace: Annotated[
+            str,
+            Field(
+                description="Namespace for multi-tenant isolation "
+                "(default 'knowledge')",
+            ),
+        ] = "knowledge",
     ) -> str:
         """Store knowledge from conversation. Creates node (high) or experience (medium/low)."""
         if not content or not content.strip():
@@ -736,6 +743,7 @@ def create_server(db_path: str) -> FastMCP:
                 context=context,
                 confidence=confidence,
                 tags=tags,
+                namespace=namespace,
             )
         except ValueError as e:
             return _json({"_v": "1.0", "error": str(e)})

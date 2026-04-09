@@ -133,11 +133,16 @@ class IntelligenceLayer:
         context: str | None = None,
         confidence: str = "high",
         tags: list[str] | None = None,
+        namespace: str = "knowledge",
     ) -> dict[str, Any]:
         """Store knowledge from conversation.
 
         High confidence creates a permanent node + experience.
         Medium/low confidence creates a decaying experience only.
+
+        The `namespace` parameter isolates knowledge across tenants/projects.
+        It is applied to both the high-confidence graph node and the
+        backing experience record.
         """
         if not content or not content.strip():
             raise ValueError("Content cannot be empty")
@@ -157,7 +162,7 @@ class IntelligenceLayer:
             node = await self.graph.add_node(
                 name=f"{type.capitalize()}: {content[:60]}",
                 type=f"learned_{type}",
-                namespace="knowledge",
+                namespace=namespace,
                 description=content,
                 tags=tags,
                 source_type="learn",
@@ -174,6 +179,7 @@ class IntelligenceLayer:
             context=context,
             confidence=confidence,
             tags=tags,
+            namespace=namespace,
         )
         experience_id = exp.id
 
@@ -204,6 +210,7 @@ class IntelligenceLayer:
             "experience_id": experience_id,
             "type": type,
             "confidence": confidence,
+            "namespace": namespace,
         }
 
     async def recall(
