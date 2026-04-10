@@ -20,9 +20,9 @@ Every AI conversation starts from scratch. Previous insights, decisions, and pat
 Kairn is different:
 
 - **Context Router + Progressive Disclosure** — Automatically loads relevant subgraphs based on keywords, starting with summaries and drilling into details only when needed. No other tool does this.
-- **Knowledge Graph with FTS5** — Not flat storage. Typed relationships (`depends-on`, `resolves`, `causes`) between nodes with full-text search across everything.
+- **Knowledge Graph with FTS5** — Not flat storage. Typed relationships (`depends-on`, `resolves`, `causes`) between nodes with provenance tracking and full-text search across everything.
 - **Experience Decay + Auto-Promotion** — Experiences lose relevance over time (biological decay model). Frequently-accessed experiences auto-promote to permanent knowledge. Your AI naturally forgets what doesn't matter.
-- **18 MCP Tools** — Works with Claude Desktop, Cursor, VS Code, Windsurf, and any MCP client.
+- **19 MCP Tools** — Works with Claude Desktop, Cursor, VS Code, Windsurf, and any MCP client.
 - **Team Workspaces with RBAC** — Per-workspace isolation with JWT auth and role-based access control.
 
 ## Quick Start
@@ -60,9 +60,9 @@ Add to `.cursor/mcp-servers.json`:
 }
 ```
 
-Restart your editor. Kairn's 18 tools appear in the MCP section.
+Restart your editor. Kairn's 19 tools appear in the MCP section.
 
-## 18 Tools (kn_ prefix)
+## 19 Tools (kn_ prefix)
 
 All tools follow MCP protocol with JSON responses.
 
@@ -99,7 +99,7 @@ All tools follow MCP protocol with JSON responses.
 | `kn_idea` | Create or update idea |
 | `kn_ideas` | List/filter ideas by status, category |
 
-### Intelligence (5)
+### Intelligence (6)
 
 | Tool | Description |
 |------|-------------|
@@ -108,6 +108,7 @@ All tools follow MCP protocol with JSON responses.
 | `kn_crossref` | Find similar solutions across workspaces |
 | `kn_context` | Keywords → relevant subgraph with progressive disclosure |
 | `kn_related` | Graph traversal (BFS/DFS) to find connected ideas |
+| `kn_promote_pending` | Promote high-access experiences to permanent nodes |
 
 ## Resources & Prompts
 
@@ -162,6 +163,7 @@ relevance(t) = initial_score × e^(-decay_rate × days)
 - `medium` → Experience with 2× decay
 - `low` → Experience with 4× decay
 - Auto-promotion: 5+ accesses → permanent node
+- Node access tracking: `kn_recall`, `kn_context`, and `kn_crossref` log which nodes were accessed, feeding the decay and promotion pipeline
 
 ## CLI
 
