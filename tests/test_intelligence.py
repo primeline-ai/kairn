@@ -728,3 +728,69 @@ class TestAccessTracking:
         # no SQL IN () syntax error.
         for call in calls:
             assert call == []  # if called at all, must be with empty list
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Activity log wiring (node-level access tracking)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestActivityLog:
+    """Verify recall/context/crossref log accessed node IDs to activity_log.
+
+    This complements TestAccessTracking (experience-level) by confirming
+    that permanent nodes also leave a trace when surfaced in queries.
+    """
+
+    @pytest.mark.asyncio
+    async def test_recall_logs_node_access(self, engine: IntelligenceLayer):
+        """recall() should write node IDs to activity_log."""
+        await engine.learn(
+            content="Connection pooling reduces database latency",
+            type="pattern",
+            confidence="high",
+        )
+
+        await engine.recall(topic="connection pooling database")
+
+        log = await engine.store.get_activity_log(entity_type="node", limit=50)
+        recall_entries = [e for e in log if e["activity_type"] == "node_recall"]
+        assert len(recall_entries) >= 1
+
+    @pytest.mark.asyncio
+    async def test_crossref_logs_node_access(self, engine: IntelligenceLayer):
+        """crossref() should write node IDs to activity_log."""
+        await engine.learn(
+            content="Circuit breaker prevents cascade failures in microservices",
+            type="solution",
+            confidence="high",
+        )
+
+        await engine.crossref(problem="cascade failure microservices")
+
+        log = await engine.store.get_activity_log(entity_type="node", limit=50)
+        crossref_entries = [e for e in log if e["activity_type"] == "node_crossref"]
+        assert len(crossref_entries) >= 1
+
+    @pytest.mark.asyncio
+    async def test_context_logs_node_access(self, engine: IntelligenceLayer):
+        """context() should write node IDs to activity_log."""
+        await engine.learn(
+            content="Event sourcing with append-only log for audit trail",
+            type="pattern",
+            confidence="high",
+        )
+
+        await engine.context(keywords="event sourcing audit")
+
+        log = await engine.store.get_activity_log(entity_type="node", limit=50)
+        context_entries = [e for e in log if e["activity_type"] == "node_context"]
+        assert len(context_entries) >= 1
+
+    @pytest.mark.asyncio
+    async def test_no_log_when_no_nodes_returned(self, engine: IntelligenceLayer):
+        """If a query returns zero nodes, no activity_log entries should be written."""
+        await engine.recall(topic="completely_nonexistent_topic_xyz")
+
+        log = await engine.store.get_activity_log(entity_type="node", limit=50)
+        assert len(log) == 0

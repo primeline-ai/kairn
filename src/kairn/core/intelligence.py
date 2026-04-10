@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -124,6 +125,35 @@ class IntelligenceLayer:
         self.memory = memory
         self.experience = experience
         self.ideas = ideas
+
+    async def _log_node_access(
+        self, activity_type: str, node_ids: list[str]
+    ) -> None:
+        """Best-effort batch-log of node accesses to activity_log.
+
+        Fires after recall/context/crossref return nodes so downstream
+        analytics can track which nodes are actually queried. Failures
+        are logged and swallowed to keep the read path fail-open.
+        """
+        if not node_ids:
+            return
+        now = datetime.now(UTC).isoformat()
+        entries = [
+            {
+                "id": str(uuid.uuid4())[:8],
+                "user_id": None,
+                "activity_type": activity_type,
+                "entity_type": "node",
+                "entity_id": nid,
+                "description": None,
+                "created_at": now,
+            }
+            for nid in node_ids
+        ]
+        try:
+            await self.store.log_activities(entries)
+        except Exception:
+            logger.debug("Failed to log node access for %s", activity_type, exc_info=True)
 
     async def learn(
         self,
@@ -246,6 +276,10 @@ class IntelligenceLayer:
                 }
             )
 
+        # Log node access for activity tracking
+        if nodes:
+            await self._log_node_access("node_recall", [n.id for n in nodes])
+
         # Search experiences (decay-aware)
         experiences = await self.experience.search(
             text=fts_query,
@@ -323,6 +357,10 @@ class IntelligenceLayer:
                     "relevance": 1.0,
                 }
             )
+
+        # Log node access for activity tracking
+        if nodes:
+            await self._log_node_access("node_crossref", [n.id for n in nodes])
 
         # Search experiences for solutions
         experiences = await self.experience.search(
@@ -418,6 +456,12 @@ class IntelligenceLayer:
                     node_out["tags"] = n.tags
                     node_out["properties"] = n.properties
                 nodes.append(node_out)
+
+        # Log node access for activity tracking
+        if nodes:
+            await self._log_node_access(
+                "node_context", [n["id"] for n in nodes]
+            )
 
         # Experience search
         experiences = await self.experience.search(

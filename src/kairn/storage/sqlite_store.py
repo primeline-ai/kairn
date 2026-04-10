@@ -848,6 +848,20 @@ class SQLiteStore(StorageBackend):
         )
         await self.db.commit()
 
+    async def log_activities(self, entries: list[dict[str, Any]]) -> None:
+        """Batch-insert activity log entries in a single transaction."""
+        if not entries:
+            return
+        for entry in entries:
+            await self.db.execute(
+                """INSERT INTO activity_log (id, user_id, activity_type, entity_type,
+                   entity_id, description, created_at)
+                   VALUES (:id, :user_id, :activity_type, :entity_type,
+                   :entity_id, :description, :created_at)""",
+                entry,
+            )
+        await self.db.commit()
+
     async def get_activity_log(
         self, *, entity_type: str | None = None, limit: int = 20
     ) -> list[dict[str, Any]]:
