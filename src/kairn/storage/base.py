@@ -236,6 +236,14 @@ class StorageBackend(ABC):
         """Log an activity entry."""
 
     @abstractmethod
+    async def log_activities(self, entries: list[dict[str, Any]]) -> None:
+        """Batch-log multiple activity entries in a single transaction.
+
+        Used by the intelligence layer to log node access after queries
+        without incurring per-entry commit overhead. Empty list is a no-op.
+        """
+
+    @abstractmethod
     async def get_activity_log(
         self, *, entity_type: str | None = None, limit: int = 20
     ) -> list[dict[str, Any]]:

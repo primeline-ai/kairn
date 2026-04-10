@@ -28,4 +28,5 @@ class Edge(BaseModel):
             "target_id": self.target_id,
             "type": self.type,
             "weight": self.weight,
+            "created_by": self.created_by,
         }

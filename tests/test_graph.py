@@ -168,6 +168,65 @@ async def test_auto_link_on_add(graph: GraphEngine):
     assert any(e.target_id == n1.id for e in auto_edges)
 
 
+async def test_auto_link_sets_created_by(graph: GraphEngine):
+    """Auto-generated edges must carry created_by='auto_link' for provenance."""
+    n1 = await graph.add_node(
+        name="Database indexing",
+        type="concept",
+        description="B-tree indexes for query optimization",
+    )
+    n2 = await graph.add_node(
+        name="Database query tuning",
+        type="pattern",
+        description="Techniques for optimizing database indexing and queries",
+    )
+
+    edges = await graph.get_edges(source_id=n2.id)
+    auto_edges = [e for e in edges if e.type == "auto_related"]
+    assert len(auto_edges) >= 1
+    for edge in auto_edges:
+        assert edge.created_by == "auto_link"
+
+
+async def test_connect_propagates_created_by(graph: GraphEngine):
+    """Manual connect() must propagate caller-provided created_by."""
+    n1 = await graph.add_node(name="Source", type="concept")
+    n2 = await graph.add_node(name="Target", type="concept")
+
+    edge = await graph.connect(n1.id, n2.id, "uses", created_by="test_caller")
+    assert edge.created_by == "test_caller"
+
+
+async def test_connect_default_created_by_is_none(graph: GraphEngine):
+    """connect() without created_by defaults to None (backward compat)."""
+    n1 = await graph.add_node(name="A", type="concept")
+    n2 = await graph.add_node(name="B", type="concept")
+
+    edge = await graph.connect(n1.id, n2.id, "related_to")
+    assert edge.created_by is None
+
+
+async def test_auto_link_limits_to_three(graph: GraphEngine):
+    """Auto-link creates at most 3 edges per node (was 5)."""
+    # Create 6 nodes that will all share keywords with the final one
+    for i in range(6):
+        await graph.add_node(
+            name=f"Caching pattern variant {i}",
+            type="concept",
+            description=f"Redis caching strategy number {i}",
+        )
+
+    n_new = await graph.add_node(
+        name="Redis caching overview",
+        type="pattern",
+        description="Overview of Redis caching strategies",
+    )
+
+    edges = await graph.get_edges(source_id=n_new.id)
+    auto_edges = [e for e in edges if e.type == "auto_related"]
+    assert 1 <= len(auto_edges) <= 3
+
+
 async def test_stats(graph: GraphEngine):
     await graph.add_node(name="Test", type="concept")
     stats = await graph.stats()

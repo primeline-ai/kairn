@@ -135,6 +135,10 @@ def create_server(db_path: str) -> FastMCP:
                 le=1.0,
             ),
         ] = 1.0,
+        created_by: Annotated[
+            str | None,
+            Field(description="Who/what created this edge (for provenance)"),
+        ] = "kn_connect",
     ) -> str:
         """Create typed, weighted edge between nodes."""
         if not source_id or not source_id.strip():
@@ -151,6 +155,7 @@ def create_server(db_path: str) -> FastMCP:
                 target_id,
                 edge_type,
                 weight=weight,
+                created_by=created_by,
             )
             result = edge.to_storage()
             result["_v"] = "1.0"

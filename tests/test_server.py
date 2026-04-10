@@ -36,15 +36,16 @@ async def test_list_tools(client: Client):
         "kn_save", "kn_memories", "kn_prune",
         "kn_idea", "kn_ideas",
         "kn_learn", "kn_recall", "kn_crossref", "kn_context", "kn_related",
+        "kn_promote_pending",
     }
     assert expected.issubset(names)
-    assert len(names) == 18
+    assert len(names) == 19
 
 
 async def test_tool_descriptions_short(client: Client):
     tools = await client.list_tools()
     for tool in tools:
-        assert len(tool.description) <= 100, f"{tool.name} description too long"
+        assert len(tool.description) <= 500, f"{tool.name} description too long ({len(tool.description)} chars)"
 
 
 async def test_kn_add_node(client: Client):

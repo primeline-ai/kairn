@@ -108,6 +108,7 @@ class GraphEngine:
         *,
         weight: float = 1.0,
         properties: dict | None = None,
+        created_by: str | None = None,
     ) -> Edge:
         """Create an edge between two nodes."""
         source = await self.store.get_node(source_id)
@@ -123,6 +124,7 @@ class GraphEngine:
             type=edge_type,
             weight=weight,
             properties=properties,
+            created_by=created_by,
         )
         await self.store.insert_edge(edge.to_storage())
         await self.bus.emit(
@@ -188,7 +190,8 @@ class GraphEngine:
     async def _auto_link(self, node: Node) -> None:
         """Find related nodes via FTS5 and create edges."""
         search_text = f"{node.name} {node.description or ''}"
-        words = re.findall(r"[a-zA-Z0-9_-]+", search_text.lower())
+        words = re.findall(r"[a-zA-Z0-9_]+", search_text.lower())
+        fts_reserved = {"and", "or", "not", "near"}
         stop_words = {
             "the",
             "a",
@@ -199,18 +202,21 @@ class GraphEngine:
             "for",
             "on",
             "with",
-            "and",
-            "or",
             "of",
             "to",
         }
-        keywords = [w for w in words if w not in stop_words and len(w) > 2]
+        keywords = [
+            w for w in words
+            if w not in stop_words and w not in fts_reserved and len(w) > 2
+        ]
         if not keywords:
             return
-        fts_query = " OR ".join(keywords)
+        # Quote each keyword to prevent FTS5 special-character interpretation
+        # (aligned with _to_fts_query in intelligence.py).
+        fts_query = " OR ".join(f'"{w}"' for w in keywords)
 
         try:
-            related = await self.store.query_nodes(text=fts_query, limit=5)
+            related = await self.store.query_nodes(text=fts_query, limit=3)
         except (OSError, RuntimeError, sqlite3.Error) as exc:
             logger.warning("FTS5 auto-link search failed for %s: %s", node.id, exc)
             return
@@ -223,6 +229,7 @@ class GraphEngine:
                         target_id=row["id"],
                         type="auto_related",
                         weight=0.5,
+                        created_by="auto_link",
                     )
                     await self.store.insert_edge(edge.to_storage())
                 except (OSError, RuntimeError, sqlite3.IntegrityError):
