@@ -200,6 +200,29 @@ async def test_kn_judge_duplicate_same_verb_raises_integrity_error(client: Clien
 
 
 @pytest.mark.asyncio
+async def test_kn_judge_accepts_case_insensitive_relation(client: Client) -> None:
+    """MCP path must match CLI Choice(case_sensitive=False) - capitalized
+    verbs work end-to-end. Prevents the cross-surface inconsistency
+    where `kairn judge --relation Compatible` succeeds but
+    kn_judge(relation="Compatible") errors."""
+    a = _data(await client.call_tool(
+        "kn_learn", {"content": "A case", "type": "decision", "confidence": "high"},
+    ))
+    b = _data(await client.call_tool(
+        "kn_learn", {"content": "B case", "type": "decision", "confidence": "high"},
+    ))
+    result = _data(await client.call_tool(
+        "kn_judge",
+        {
+            "source_id": a["node_id"],
+            "target_id": b["node_id"],
+            "relation": " Compatible ",  # leading/trailing space + capital letter
+        },
+    ))
+    assert result["type"] == "compatible"
+
+
+@pytest.mark.asyncio
 async def test_kn_judge_different_verbs_same_pair_coexist(client: Client) -> None:
     """Same (source, target) with DIFFERENT verbs is allowed (composite PK)."""
     a = _data(await client.call_tool(

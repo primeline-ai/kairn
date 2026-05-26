@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 import sys
 import time
 import uuid
@@ -854,20 +855,29 @@ def judge(
     assert how the new node relates to existing ones.
     """
     db_path = _resolve_db(path)
+    # Click already lowercases via Choice(case_sensitive=False); the
+    # strip() here defends against accidental whitespace in the value.
+    relation = relation.strip().lower()
 
     async def _run() -> dict:
         store, intel = await _build_intel_stack(db_path)
         try:
             properties = {"reason": reason} if reason else None
-            edge = await intel.graph.connect(
-                source_id,
-                target_id,
-                relation,
-                weight=confidence,
-                properties=properties,
-                created_by="kn_judge",
-                strict_relation=True,
-            )
+            try:
+                edge = await intel.graph.connect(
+                    source_id,
+                    target_id,
+                    relation,
+                    weight=confidence,
+                    properties=properties,
+                    created_by="kn_judge",
+                    strict_relation=True,
+                )
+            except sqlite3.IntegrityError as e:
+                # Surface dup-edge UNIQUE-PK collision as a clean
+                # ValueError so _run_json renders it as JSON error
+                # envelope instead of a Python traceback.
+                raise ValueError(f"duplicate judgment edge: {e}") from e
             result = edge.to_storage()
             result["_v"] = "1.0"
             return result
@@ -875,6 +885,54 @@ def judge(
             await store.close()
 
     _run_json(_run)
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option(
+    "--check",
+    default=None,
+    help="Run a single check by ID; omit to run all",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    default=False,
+    help="Emit JSON envelope (default: same envelope, pretty-printed for humans)",
+)
+def doctor(path: str, check: str | None, as_json: bool) -> None:
+    """Read-only Kairn health diagnostics.
+
+    Runs the diagnostic registry (5 checks: lock mode, FTS5 index parity,
+    promoted-experience consistency, namespace distribution, orphan edges)
+    and prints a JSON envelope. Same shape as the MCP tool `kn_doctor`.
+
+    Exit codes:
+      0 - all checks ok
+      1 - one or more checks reported warn/fail/error
+    """
+    db_path = _resolve_db(path)
+
+    async def _run() -> dict:
+        store, _intel = await _build_intel_stack(db_path)
+        try:
+            from kairn.diagnostic import run_checks
+            return await run_checks(store, only=check)
+        finally:
+            await store.close()
+
+    # _run_json prints and exits; we need the report first to compute exit code.
+    report = asyncio.run(_run())
+    click.echo(json.dumps(report, indent=2))
+    summary = report.get("summary", {})
+    # Exit 1 only on fail/error. "warn" is intentionally non-fatal
+    # severity (e.g. high namespace count) so a stale-but-functional
+    # workspace doesn't break CI pipelines. Anyone who wants a strict
+    # gate can grep the JSON for status=="warn".
+    has_problems = any(summary.get(k, 0) > 0 for k in ("fail", "error"))
+    if has_problems:
+        raise SystemExit(1)
 
 
 @main.command()

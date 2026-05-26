@@ -14,6 +14,7 @@ from pydantic import Field
 from kairn.core.experience import ExperienceEngine
 from kairn.core.graph import GraphEngine
 from kairn.core.ideas import IdeaEngine
+from kairn.diagnostic import CHECK_REGISTRY, run_checks
 from kairn.core.intelligence import IntelligenceLayer
 from kairn.core.memory import ProjectMemory
 from kairn.core.router import ContextRouter
@@ -28,7 +29,7 @@ def _json(data: dict[str, Any]) -> str:
 
 
 def create_server(db_path: str) -> FastMCP:
-    """Create FastMCP server: 18 tools (5 graph + 3 project + 3 exp + 2 ideas + 5 intel)."""
+    """Create FastMCP server: 21 tools (5 graph + kn_judge + kn_doctor + 3 project + 3 exp + 2 ideas + 6 intel including kn_learn with candidates)."""
     mcp = FastMCP("kairn", version="0.1.0")
 
     state: dict[str, Any] = {}
@@ -205,6 +206,11 @@ def create_server(db_path: str) -> FastMCP:
             return _json({"_v": "1.0", "error": "target_id is required"})
         if not relation or not relation.strip():
             return _json({"_v": "1.0", "error": "relation is required"})
+
+        # Normalize to lowercase to match CLI behavior (click.Choice
+        # uses case_sensitive=False). Without this, kn_judge(relation="Compatible")
+        # would error while `kairn judge --relation Compatible` would succeed.
+        relation = relation.strip().lower()
 
         s = await _init()
         properties = {"reason": reason} if reason else None
@@ -977,6 +983,32 @@ def create_server(db_path: str) -> FastMCP:
                 "results": results,
             }
         )
+
+    @mcp.tool()
+    async def kn_doctor(
+        check: Annotated[
+            str | None,
+            Field(
+                description="Run a single check by ID; omit to run all. "
+                "Known: check_lock_mode, check_fts_index_health, "
+                "check_promoted_experience_consistency, "
+                "check_namespace_distribution, check_orphan_edges",
+            ),
+        ] = None,
+    ) -> str:
+        """Read-only Kairn health diagnostics.
+
+        Returns a structured envelope with per-check verdicts and a
+        roll-up summary. Identical JSON shape to `kairn doctor --json`
+        (envelope parity). Safe to call any time; checks never mutate
+        workspace state.
+        """
+        s = await _init()
+        try:
+            report = await run_checks(s["store"], only=check)
+            return _json(report)
+        except ValueError as e:
+            return _json({"_v": "1.0", "error": str(e)})
 
     # ── Resources (3) ──────────────────────────────────────────
 
