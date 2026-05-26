@@ -37,9 +37,10 @@ async def test_list_tools(client: Client):
         "kn_idea", "kn_ideas",
         "kn_learn", "kn_recall", "kn_crossref", "kn_context", "kn_related",
         "kn_promote_pending",
+        "kn_judge", "kn_doctor",
     }
     assert expected.issubset(names)
-    assert len(names) == 19
+    assert len(names) == 21
 
 
 async def test_tool_descriptions_short(client: Client):

@@ -119,6 +119,38 @@ async def test_promoted_experience_consistency_ok_on_clean_db(
 
 
 @pytest.mark.asyncio
+async def test_fts_index_health_ok_after_soft_delete(store: SQLiteStore) -> None:
+    """Soft-deleted nodes stay in nodes_fts via the `nodes_fts_au` UPDATE
+    trigger (schema/triggers.sql), so the count formula in
+    check_fts_index_health must hold: nodes_fts == live_nodes + soft_deleted.
+    Closes RC#4 Finding #5: previously the FTS-soft-delete invariant was
+    only asserted in a docstring comment, never empirically verified by a
+    test. Triggers can be silently dropped or schema-migrations can break
+    the invariant; this test pins it down.
+    """
+    bus = EventBus()
+    from kairn.core.graph import GraphEngine
+    graph = GraphEngine(store, bus)
+
+    # Seed 3 nodes, soft-delete 1. Formula expects nodes_fts to still
+    # contain all 3 rows (the soft-delete is an UPDATE setting deleted_at,
+    # not a DELETE, so the trigger keeps the FTS row).
+    a = await graph.add_node(name="Survive A", type="concept")
+    b = await graph.add_node(name="Survive B", type="concept")
+    c = await graph.add_node(name="Soft-delete me", type="concept")
+    await graph.remove_node(c.id)
+
+    envelope = await CHECK_REGISTRY["check_fts_index_health"](store)
+    assert envelope["status"] == "ok", (
+        f"Expected ok but got {envelope['status']}: {envelope['evidence']}"
+    )
+    # Evidence should show nodes=2 live, deleted=1, fts=3 (formula holds).
+    assert "nodes=2" in envelope["evidence"]
+    assert "deleted=1" in envelope["evidence"]
+    assert "fts=3" in envelope["evidence"]
+
+
+@pytest.mark.asyncio
 async def test_orphan_edges_detects_orphan(store: SQLiteStore) -> None:
     """Insert an edge to a non-existent target; check must warn.
 

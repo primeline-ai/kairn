@@ -229,12 +229,20 @@ def create_server(db_path: str) -> FastMCP:
             return _json(result)
         except ValueError as e:
             return _json({"_v": "1.0", "error": str(e)})
-        except sqlite3.IntegrityError as e:
-            # Composite PK violation: (source_id, target_id, type) already
-            # exists. Surface as error envelope rather than tool exception
-            # so callers can decide (e.g. disconnect-then-rejudge).
+        except sqlite3.IntegrityError:
+            # Composite PK violation: (source_id, target_id, relation)
+            # already exists. Surface as error envelope rather than tool
+            # exception. Use a fixed-shape message (no raw SQLite text)
+            # to avoid leaking column names; the caller has the triple
+            # it submitted and can disconnect-then-rejudge if needed.
             return _json(
-                {"_v": "1.0", "error": f"duplicate judgment edge: {e}"}
+                {
+                    "_v": "1.0",
+                    "error": (
+                        f"duplicate judgment edge: "
+                        f"({source_id}, {target_id}, {relation}) already exists"
+                    ),
+                }
             )
 
     @mcp.tool()
