@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
@@ -162,6 +163,73 @@ def create_server(db_path: str) -> FastMCP:
             return _json(result)
         except ValueError as e:
             return _json({"_v": "1.0", "error": str(e)})
+
+    @mcp.tool()
+    async def kn_judge(
+        source_id: Annotated[str, Field(description="Source node ID")],
+        target_id: Annotated[str, Field(description="Target node ID")],
+        relation: Annotated[
+            str,
+            Field(
+                description="One of the 5 canonical verbs: "
+                "conflicts_with, supersedes, compatible, scoped, related",
+            ),
+        ],
+        reason: Annotated[
+            str | None,
+            Field(
+                description="Optional rationale stored in edge.properties.reason",
+            ),
+        ] = None,
+        confidence: Annotated[
+            float,
+            Field(
+                description="Confidence 0.0-1.0; persisted as edge.weight",
+                ge=0.0,
+                le=1.0,
+            ),
+        ] = 1.0,
+    ) -> str:
+        """Record a typed relationship judgment between two nodes.
+
+        Strict-mode wrapper around kn_connect: only the 5 canonical
+        relation verbs (conflicts_with, supersedes, compatible, scoped,
+        related) are accepted. Use after kn_learn returns a non-empty
+        candidates[] list to assert how the new node relates to an
+        existing one. For legacy or system-generated edges, use
+        kn_connect (lax mode).
+        """
+        if not source_id or not source_id.strip():
+            return _json({"_v": "1.0", "error": "source_id is required"})
+        if not target_id or not target_id.strip():
+            return _json({"_v": "1.0", "error": "target_id is required"})
+        if not relation or not relation.strip():
+            return _json({"_v": "1.0", "error": "relation is required"})
+
+        s = await _init()
+        properties = {"reason": reason} if reason else None
+        try:
+            edge = await s["graph"].connect(
+                source_id,
+                target_id,
+                relation,
+                weight=confidence,
+                properties=properties,
+                created_by="kn_judge",
+                strict_relation=True,
+            )
+            result = edge.to_storage()
+            result["_v"] = "1.0"
+            return _json(result)
+        except ValueError as e:
+            return _json({"_v": "1.0", "error": str(e)})
+        except sqlite3.IntegrityError as e:
+            # Composite PK violation: (source_id, target_id, type) already
+            # exists. Surface as error envelope rather than tool exception
+            # so callers can decide (e.g. disconnect-then-rejudge).
+            return _json(
+                {"_v": "1.0", "error": f"duplicate judgment edge: {e}"}
+            )
 
     @mcp.tool()
     async def kn_query(

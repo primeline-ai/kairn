@@ -820,6 +820,65 @@ def connect(
 
 @main.command()
 @click.argument("path", type=click.Path(exists=True))
+@click.option("--source-id", required=True, help="Source node ID")
+@click.option("--target-id", required=True, help="Target node ID")
+@click.option(
+    "--relation",
+    required=True,
+    type=click.Choice(
+        ["conflicts_with", "supersedes", "compatible", "scoped", "related"],
+        case_sensitive=False,
+    ),
+    help="Canonical 5-verb judgment relation",
+)
+@click.option("--reason", default=None, help="Optional rationale (stored in edge.properties)")
+@click.option(
+    "--confidence",
+    default=1.0,
+    type=click.FloatRange(0.0, 1.0),
+    help="Confidence 0.0-1.0 (persisted as edge.weight)",
+)
+def judge(
+    path: str,
+    source_id: str,
+    target_id: str,
+    relation: str,
+    reason: str | None,
+    confidence: float,
+) -> None:
+    """Record a typed relationship judgment between two nodes (5-verb vocabulary).
+
+    Strict-mode wrapper around `kairn connect`: only canonical verbs
+    (conflicts_with, supersedes, compatible, scoped, related) are
+    accepted. Use after `kairn learn` surfaces candidate matches to
+    assert how the new node relates to existing ones.
+    """
+    db_path = _resolve_db(path)
+
+    async def _run() -> dict:
+        store, intel = await _build_intel_stack(db_path)
+        try:
+            properties = {"reason": reason} if reason else None
+            edge = await intel.graph.connect(
+                source_id,
+                target_id,
+                relation,
+                weight=confidence,
+                properties=properties,
+                created_by="kn_judge",
+                strict_relation=True,
+            )
+            result = edge.to_storage()
+            result["_v"] = "1.0"
+            return result
+        finally:
+            await store.close()
+
+    _run_json(_run)
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
 @click.option("--node-id", default=None, help="Node ID to soft-delete")
 @click.option("--source-id", default=None, help="Edge source ID")
 @click.option("--target-id", default=None, help="Edge target ID")
