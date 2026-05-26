@@ -10,7 +10,7 @@ from typing import Any
 
 from kairn.events.bus import EventBus
 from kairn.events.types import EventType
-from kairn.models.edge import Edge
+from kairn.models.edge import Edge, validate_relation
 from kairn.models.node import Node
 from kairn.storage.base import StorageBackend
 
@@ -109,8 +109,21 @@ class GraphEngine:
         weight: float = 1.0,
         properties: dict | None = None,
         created_by: str | None = None,
+        strict_relation: bool = False,
     ) -> Edge:
-        """Create an edge between two nodes."""
+        """Create an edge between two nodes.
+
+        When `strict_relation=True`, `edge_type` must be one of the five
+        canonical verbs in `RELATION_VERBS` or `ValueError` is raised.
+        The default lax mode preserves backward compatibility with the
+        historical edge population - unknown verbs emit a one-line
+        `logger.warning` via `validate_relation` and still persist.
+        Use `kn_judge` (Phase 3) for strict-mode judgment edges.
+        """
+        # Validate relation verb (lax by default, strict for kn_judge).
+        # Raises on empty/whitespace verb in either mode.
+        validate_relation(edge_type, strict=strict_relation)
+
         source = await self.store.get_node(source_id)
         target = await self.store.get_node(target_id)
         if not source:
