@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -104,6 +105,13 @@ def _to_fts_query(text: str) -> str | None:
     return " OR ".join(f'"{w}"' for w in keywords)
 
 
+# Max candidates returned by kn_learn FTS5 scan. Set conservatively;
+# Phase 0 bench confirmed p95 = 1.258ms for the 5-row LIMIT shape at
+# the current 4923-node scale (`_autonomous/benchmarks/kairn-fts5-latency.json`).
+_CANDIDATES_LIMIT = 5
+_CANDIDATE_SNIPPET_CHARS = 160
+
+
 class IntelligenceLayer:
     """Unified intelligence operations over graph, experience, and routing."""
 
@@ -164,6 +172,7 @@ class IntelligenceLayer:
         confidence: str = "high",
         tags: list[str] | None = None,
         namespace: str = "knowledge",
+        with_candidates: bool = True,
     ) -> dict[str, Any]:
         """Store knowledge from conversation.
 
@@ -173,6 +182,16 @@ class IntelligenceLayer:
         The `namespace` parameter isolates knowledge across tenants/projects.
         It is applied to both the high-confidence graph node and the
         backing experience record.
+
+        When `with_candidates=True` (default), runs a follow-up FTS5 scan
+        over existing nodes using the saved content as the seed query.
+        Returns up to `_CANDIDATES_LIMIT` semantically-related node
+        snippets in the response envelope under the `candidates` key so
+        the caller can decide whether to invoke `kn_judge` to assert a
+        relationship verb (conflicts_with / supersedes / compatible /
+        scoped / related). The just-created node (if any) is excluded
+        from candidates. Set `with_candidates=False` for high-volume
+        bulk-save scripts that do not need the judgment hook.
         """
         if not content or not content.strip():
             raise ValueError("Content cannot be empty")
@@ -233,7 +252,7 @@ class IntelligenceLayer:
             stored_as,
         )
 
-        return {
+        response: dict[str, Any] = {
             "_v": "1.0",
             "stored_as": stored_as,
             "node_id": node_id,
@@ -242,6 +261,81 @@ class IntelligenceLayer:
             "confidence": confidence,
             "namespace": namespace,
         }
+
+        if with_candidates:
+            response["candidates"] = await self._scan_candidates(
+                content=content,
+                exclude_node_id=node_id,
+                namespace=namespace,
+            )
+
+        return response
+
+    async def _scan_candidates(
+        self,
+        *,
+        content: str,
+        exclude_node_id: str | None,
+        namespace: str,
+    ) -> list[dict[str, Any]]:
+        """FTS5-scan for semantically-related existing nodes.
+
+        Mirrors the Phase 0 benchmark query shape (validated p95 1.258ms
+        at 4923-node scale). Used by `learn()` to surface judgment
+        candidates without forcing the caller to issue a separate
+        `kn_context` / `kn_recall` query.
+
+        Returns up to `_CANDIDATES_LIMIT` candidate dicts, each shaped
+        `{id, name, type, snippet, sim_rank}`. `snippet` is the node
+        description truncated to `_CANDIDATE_SNIPPET_CHARS`; `sim_rank`
+        is the integer position 0..N-1 in FTS5 rank order (lower is
+        more relevant). Empty list when no FTS5 hits or the content
+        produced no usable keywords.
+        """
+        fts_query = _to_fts_query(content)
+        if not fts_query:
+            return []
+
+        # Over-fetch by one so we can drop the just-created node and
+        # still return up to _CANDIDATES_LIMIT.
+        # Fail-open: the save already persisted (lines above). A scan
+        # error must not abort the caller, otherwise a retry would
+        # create a duplicate node. Mirrors GraphEngine._auto_link
+        # guard at graph.py.
+        try:
+            nodes = await self.graph.query(
+                text=fts_query,
+                namespace=namespace,
+                limit=_CANDIDATES_LIMIT + 1,
+            )
+        except (OSError, RuntimeError, sqlite3.Error):
+            logger.warning(
+                "FTS5 candidate scan failed for content (len=%d); returning []",
+                len(content),
+                exc_info=True,
+            )
+            return []
+
+        candidates: list[dict[str, Any]] = []
+        for node in nodes:
+            if exclude_node_id and node.id == exclude_node_id:
+                continue
+            description = node.description or ""
+            snippet = description[:_CANDIDATE_SNIPPET_CHARS]
+            if len(description) > _CANDIDATE_SNIPPET_CHARS:
+                snippet += "..."
+            candidates.append(
+                {
+                    "id": node.id,
+                    "name": node.name,
+                    "type": node.type,
+                    "snippet": snippet,
+                    "sim_rank": len(candidates),
+                }
+            )
+            if len(candidates) >= _CANDIDATES_LIMIT:
+                break
+        return candidates
 
     async def recall(
         self,

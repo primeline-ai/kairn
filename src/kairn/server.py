@@ -766,6 +766,15 @@ def create_server(db_path: str) -> FastMCP:
                 "(default 'knowledge')",
             ),
         ] = "knowledge",
+        with_candidates: Annotated[
+            bool,
+            Field(
+                description="Return up to 5 FTS5-matched related nodes "
+                "in candidates[] so the caller can decide whether to "
+                "invoke kn_judge for a relationship verb. Set False "
+                "for bulk-save scripts that do not need the hook.",
+            ),
+        ] = True,
     ) -> str:
         """Store knowledge from conversation. Creates node (high) or experience (medium/low)."""
         if not content or not content.strip():
@@ -780,6 +789,7 @@ def create_server(db_path: str) -> FastMCP:
                 confidence=confidence,
                 tags=tags,
                 namespace=namespace,
+                with_candidates=with_candidates,
             )
         except ValueError as e:
             return _json({"_v": "1.0", "error": str(e)})
