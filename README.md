@@ -22,7 +22,7 @@ Kairn is different:
 - **Context Router + Progressive Disclosure** — Automatically loads relevant subgraphs based on keywords, starting with summaries and drilling into details only when needed. No other tool does this.
 - **Knowledge Graph with FTS5** — Not flat storage. Typed relationships (`depends-on`, `resolves`, `causes`) between nodes with provenance tracking and full-text search across everything.
 - **Experience Decay + Auto-Promotion** — Experiences lose relevance over time (biological decay model). Frequently-accessed experiences auto-promote to permanent knowledge. Your AI naturally forgets what doesn't matter.
-- **19 MCP Tools** — Works with Claude Desktop, Cursor, VS Code, Windsurf, and any MCP client.
+- **21 MCP Tools** — Works with Claude Desktop, Cursor, VS Code, Windsurf, and any MCP client. Includes `kn_judge` for 5-verb relationship judgments and `kn_doctor` for read-only health diagnostics.
 - **Team Workspaces with RBAC** — Per-workspace isolation with JWT auth and role-based access control.
 
 ## Quick Start
@@ -60,18 +60,19 @@ Add to `.cursor/mcp-servers.json`:
 }
 ```
 
-Restart your editor. Kairn's 19 tools appear in the MCP section.
+Restart your editor. Kairn's 21 tools appear in the MCP section.
 
-## 19 Tools (kn_ prefix)
+## 21 Tools (kn_ prefix)
 
 All tools follow MCP protocol with JSON responses.
 
-### Graph (5)
+### Graph (6)
 
 | Tool | Description |
 |------|-------------|
 | `kn_add` | Add node to knowledge graph |
-| `kn_connect` | Create typed edge between nodes |
+| `kn_connect` | Create typed edge between nodes (lax-mode vocabulary) |
+| `kn_judge` | Record 5-verb judgment edge (strict mode: `conflicts_with` / `supersedes` / `compatible` / `scoped` / `related`) |
 | `kn_query` | Search by text, type, tags, namespace |
 | `kn_remove` | Soft-delete node or edge (undo-safe) |
 | `kn_status` | Graph stats, health, system overview |
@@ -110,6 +111,12 @@ All tools follow MCP protocol with JSON responses.
 | `kn_related` | Graph traversal (BFS/DFS) to find connected ideas |
 | `kn_promote_pending` | Promote high-access experiences to permanent nodes |
 
+### Diagnostic (1)
+
+| Tool | Description |
+|------|-------------|
+| `kn_doctor` | Read-only health checks (lock mode, FTS5 parity, promotion backlog, namespace sprawl, orphan edges) - returns structured envelope with per-check verdicts and roll-up summary |
+
 ## Resources & Prompts
 
 **Resources** (read-only context for MCP clients):
@@ -129,7 +136,7 @@ All tools follow MCP protocol with JSON responses.
 Any MCP Client (Claude, Cursor, VS Code)
         │
         ▼ MCP Protocol (stdio)
-FastMCP Server (18 tools)
+FastMCP Server (21 tools)
         │
    ┌────┼────┐
    ▼    ▼    ▼
