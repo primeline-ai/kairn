@@ -30,6 +30,15 @@ class Experience(BaseModel):
     promoted_to_node_id: str | None = None
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     last_accessed: str | None = None
+    # Bi-temporal valid-time window (when the fact was TRUE in the world).
+    # ORTHOGONAL to created_at (transaction-time) and to decay: valid_from /
+    # valid_to NEVER feed relevance(). Both nullable; NULL = no validity bound.
+    valid_from: str | None = None
+    valid_to: str | None = None
+    # Rule-based cross-session entity grouping key (no LLM, no embeddings).
+    # Populated at save() time; used by the bi-temporal recall path to
+    # diversify/aggregate experiences about the same subject across sessions.
+    entity_key: str | None = None
 
     def relevance(self, *, at: datetime | None = None) -> float:
         """Calculate current relevance using exponential decay."""
@@ -47,6 +56,10 @@ class Experience(BaseModel):
         return self.model_dump()
 
     def to_response(self, *, detail: str = "summary") -> dict:
+        # Note: the validity window (valid_from/valid_to) and entity_key are
+        # included only in the "full" detail branch below, not the summary
+        # branch, to keep summary responses token-lean. Callers that need
+        # validity/entity data must request detail="full".
         data = {
             "_v": "1.0",
             "id": self.id,
@@ -67,6 +80,8 @@ class Experience(BaseModel):
                     "promoted_to_node_id": self.promoted_to_node_id,
                     "created_at": self.created_at,
                     "last_accessed": self.last_accessed,
+                    "valid_from": self.valid_from,
+                    "valid_to": self.valid_to,
                 }
             )
         return data

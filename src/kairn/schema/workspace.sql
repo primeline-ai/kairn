@@ -50,7 +50,13 @@ CREATE TABLE IF NOT EXISTS experiences (
     access_count INTEGER DEFAULT 0,
     promoted_to_node_id TEXT REFERENCES nodes(id),
     created_at TEXT NOT NULL,
-    last_accessed TEXT
+    last_accessed TEXT,
+    -- Bi-temporal valid-time window (when the fact was TRUE), orthogonal to
+    -- created_at (transaction-time) and to decay. NULL = no validity bound.
+    valid_from TEXT,
+    valid_to TEXT,
+    -- Rule-based cross-session entity grouping key (no LLM/embeddings).
+    entity_key TEXT
 );
 
 -- Projects

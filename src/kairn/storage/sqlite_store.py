@@ -43,6 +43,9 @@ _ALLOWED_COLUMNS: dict[str, set[str]] = {
         "promoted_to_node_id",
         "last_accessed",
         "properties",
+        "valid_from",
+        "valid_to",
+        "entity_key",
     },
     "projects": {
         "name",
@@ -144,6 +147,46 @@ class SQLiteStore(StorageBackend):
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_experiences_namespace "
             "ON experiences(namespace)"
+        )
+
+        # Migration: bi-temporal valid-time window (added 2026-06-13).
+        # valid_from / valid_to record WHEN a fact was true in the world,
+        # orthogonal to created_at (transaction-time) and to decay. Additive,
+        # nullable, DEFAULT NULL — safe on the FTS-backed experiences table
+        # (ALTER ADD COLUMN does not touch the FTS content). Re-`columns` is
+        # re-read because the namespace ALTER above may have changed it.
+        cursor = await self._db.execute("PRAGMA table_info(experiences)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "valid_from" not in columns:
+            logger.info("Migrating experiences: adding valid_from column")
+            await self._db.execute(
+                "ALTER TABLE experiences ADD COLUMN valid_from TEXT DEFAULT NULL"
+            )
+        if "valid_to" not in columns:
+            logger.info("Migrating experiences: adding valid_to column")
+            await self._db.execute(
+                "ALTER TABLE experiences ADD COLUMN valid_to TEXT DEFAULT NULL"
+            )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_experiences_valid_from "
+            "ON experiences(valid_from)"
+        )
+
+        # Migration: cross-session entity grouping key (added 2026-06-13).
+        # Rule/heuristic subject key (no LLM, no embeddings); groups
+        # experiences about the same subject across sessions. Additive,
+        # nullable. Re-read the column snapshot so this guard reflects the
+        # valid_from / valid_to ALTERs just executed above.
+        cursor = await self._db.execute("PRAGMA table_info(experiences)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "entity_key" not in columns:
+            logger.info("Migrating experiences: adding entity_key column")
+            await self._db.execute(
+                "ALTER TABLE experiences ADD COLUMN entity_key TEXT DEFAULT NULL"
+            )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_experiences_entity_key "
+            "ON experiences(entity_key)"
         )
 
     async def close(self) -> None:
@@ -384,13 +427,18 @@ class SQLiteStore(StorageBackend):
         # callers that pre-date the namespace migration).
         payload = dict(experience)
         payload.setdefault("namespace", "knowledge")
+        # Bi-temporal + entity columns default to NULL for callers that pre-date
+        # them, keeping the INSERT backward compatible.
+        payload.setdefault("valid_from", None)
+        payload.setdefault("valid_to", None)
+        payload.setdefault("entity_key", None)
         await self.db.execute(
             """INSERT INTO experiences (id, namespace, type, content, context, confidence, score,
                decay_rate, tags, properties, created_by, access_count, promoted_to_node_id,
-               created_at, last_accessed)
+               created_at, last_accessed, valid_from, valid_to, entity_key)
                VALUES (:id, :namespace, :type, :content, :context, :confidence, :score,
                :decay_rate, :tags, :properties, :created_by, :access_count, :promoted_to_node_id,
-               :created_at, :last_accessed)""",
+               :created_at, :last_accessed, :valid_from, :valid_to, :entity_key)""",
             _serialize_json_fields(payload, ["tags", "properties"]),
         )
         await self.db.commit()

@@ -90,6 +90,8 @@ class ExperienceEngine:
         confidence: str = "high",
         tags: list[str] | None = None,
         namespace: str = "knowledge",
+        valid_from: str | None = None,
+        valid_to: str | None = None,
     ) -> Experience:
         """Save a new experience.
 
@@ -100,6 +102,10 @@ class ExperienceEngine:
             confidence: Confidence level (must be in VALID_CONFIDENCES)
             tags: Optional tags
             namespace: Namespace for multi-tenant isolation (default "knowledge")
+            valid_from: Optional valid-time start (when the fact became true).
+                Orthogonal to created_at and decay; NEVER feeds relevance().
+            valid_to: Optional valid-time end (when the fact stopped being true,
+                e.g. a supersession). Orthogonal to decay; NEVER feeds relevance().
 
         Returns:
             Created Experience
@@ -136,6 +142,8 @@ class ExperienceEngine:
             score=1.0,
             decay_rate=decay_rate,
             tags=tags or [],
+            valid_from=valid_from,
+            valid_to=valid_to,
         )
 
         # Insert into store
