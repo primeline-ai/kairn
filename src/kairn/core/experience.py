@@ -47,6 +47,26 @@ def decay_rate_from_half_life(half_life_days: float) -> float:
     return math.log(2) / half_life_days
 
 
+# Bucket width for quantizing decay-relevance when a text query is present.
+# Exact relevance values are unique per row (microsecond created_at
+# differences), so sorting by them collapses to pure recency and throws
+# away match strength. Coarse buckets keep decay meaningful across large
+# age gaps while letting BM25 order win within a bucket.
+RELEVANCE_BUCKET_SIZE = 0.05
+
+
+def relevance_bucket(value: float) -> int:
+    """Quantize a relevance value into a coarse bucket index.
+
+    Args:
+        value: Relevance in [0.0, 1.0]
+
+    Returns:
+        Bucket index (higher = more relevant)
+    """
+    return round(value / RELEVANCE_BUCKET_SIZE)
+
+
 class ExperienceEngine:
     """Engine for managing experiences with decay and promotion."""
 
@@ -167,9 +187,11 @@ class ExperienceEngine:
             offset: Offset for pagination
 
         Returns:
-            List of matching experiences, sorted by relevance descending
+            List of matching experiences. With a text query, BM25 match
+            strength is the primary order and decay-relevance acts as a
+            coarse tiebreak; without text, sorted by relevance descending.
         """
-        # Query from store
+        # Query from store (the FTS path returns rows in BM25 match order)
         results = await self.store.query_experiences(
             text=text,
             exp_type=exp_type,
@@ -179,17 +201,27 @@ class ExperienceEngine:
 
         # Convert to Experience objects and calculate current relevance
         now = datetime.now(UTC)
-        experiences = []
+        scored: list[tuple[Experience, float]] = []
         for data in results:
             exp = Experience(**data)
             current_relevance = exp.relevance(at=now)
 
             # Apply min_relevance filter
             if current_relevance >= min_relevance:
-                experiences.append(exp)
+                scored.append((exp, current_relevance))
 
-        # Sort by relevance descending
-        experiences.sort(key=lambda e: e.relevance(at=now), reverse=True)
+        if text:
+            # Match strength stays primary: quantize relevance into coarse
+            # buckets and stable-sort by bucket, so the store's BM25 order
+            # survives within each bucket. Sorting by exact relevance would
+            # collapse to pure recency (microsecond created_at differences
+            # make every value unique) and discard match strength.
+            scored.sort(key=lambda pair: relevance_bucket(pair[1]), reverse=True)
+        else:
+            # No match signal without text: exact relevance is the order.
+            scored.sort(key=lambda pair: pair[1], reverse=True)
+
+        experiences = [exp for exp, _ in scored]
 
         # Apply pagination
         return experiences[offset : offset + limit]

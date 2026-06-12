@@ -10,6 +10,7 @@ from kairn.core.experience import (
     HALF_LIVES,
     ExperienceEngine,
     decay_rate_from_half_life,
+    relevance_bucket,
 )
 from kairn.events.bus import EventBus
 from kairn.events.types import EventType
@@ -418,7 +419,12 @@ async def test_search_with_min_relevance(engine):
 
 @pytest.mark.asyncio
 async def test_search_sorted_by_relevance(engine):
-    """Test that search results are sorted by relevance descending."""
+    """Decay separates same-match entries across coarse buckets.
+
+    With a text query, decay-relevance is only a coarse bucket tiebreak
+    (BM25 is primary within a bucket). The three entries here span
+    distinct buckets (~20, 14, 10), so the decay order still holds.
+    """
     now = datetime.now(timezone.utc)
 
     # Create experiences with different ages
@@ -462,6 +468,115 @@ async def test_search_with_limit_offset(engine):
     page1_ids = {r.id for r in page1}
     page2_ids = {r.id for r in page2}
     assert len(page1_ids & page2_ids) == 0
+
+
+@pytest.mark.asyncio
+async def test_search_text_match_strength_beats_microsecond_recency(engine):
+    """With a text query, BM25 match strength must be the primary ranking
+    signal. A corpus of same-age entries (created microseconds apart) where
+    the OLDEST entry is the strongest match must return that entry first.
+
+    Regression guard: exact decay-relevance re-sorting collapses to pure
+    reverse-chronological order when entries differ only by microseconds,
+    which throws away match strength entirely.
+
+    Mechanism: all six entries are fresh, so they share one relevance
+    bucket; the stable sort then preserves the store's BM25 order, which
+    puts the high-term-frequency short doc first.
+    """
+    # Oldest entry: strongest match (high term frequency, short doc).
+    best = await engine.save(
+        content="quantum entanglement quantum decoherence quantum tunneling",
+        type="solution",
+    )
+
+    # Newer entries: weak matches (single occurrence, longer docs).
+    for i in range(5):
+        await engine.save(
+            content=(
+                f"note {i} mentioning quantum once among many other"
+                " unrelated filler words about cooking pasta recipes"
+                " and gardening tips for spring"
+            ),
+            type="solution",
+        )
+
+    results = await engine.search(text="quantum")
+
+    assert len(results) == 6
+    assert results[0].id == best.id
+
+
+@pytest.mark.asyncio
+async def test_search_text_old_low_relevance_ranks_below_fresh(engine):
+    """Decay still matters across coarse buckets: a genuinely old entry
+    (low decay-relevance) ranks below a fresh entry even when the old one
+    is the stronger text match. The old entry must still appear in results.
+    """
+    now = datetime.now(timezone.utc)
+
+    # Fresh entry: weak match (single occurrence, long doc).
+    fresh = await engine.save(
+        content=(
+            "maintenance note mentioning plasma once among many other"
+            " unrelated filler words about scheduling and logistics"
+        ),
+        type="solution",
+    )
+
+    # Old entry: strongest match, but 400 days old (relevance ~0.25 for a
+    # high-confidence solution with a 200-day half-life).
+    old = await engine.save(
+        content="plasma containment plasma flux plasma shielding",
+        type="solution",
+    )
+    await engine.store.db.execute(
+        "UPDATE experiences SET created_at = ? WHERE id = ?",
+        ((now - timedelta(days=400)).isoformat(), old.id),
+    )
+    await engine.store.db.commit()
+
+    results = await engine.search(text="plasma")
+
+    assert len(results) == 2
+    assert results[0].id == fresh.id
+    assert results[1].id == old.id
+
+
+@pytest.mark.asyncio
+async def test_search_without_text_sorted_by_exact_relevance(engine):
+    """Without a text query there is no match signal: results stay sorted
+    by exact decay-relevance descending (behavior unchanged by the
+    bucketed-tiebreak fix for text queries).
+    """
+    now = datetime.now(timezone.utc)
+
+    exp_fresh = await engine.save(content="Alpha", type="solution")
+    exp_mid = await engine.save(content="Beta", type="solution")
+    exp_old = await engine.save(content="Gamma", type="solution")
+
+    await engine.store.db.execute(
+        "UPDATE experiences SET created_at = ? WHERE id = ?",
+        ((now - timedelta(days=100)).isoformat(), exp_mid.id),
+    )
+    await engine.store.db.execute(
+        "UPDATE experiences SET created_at = ? WHERE id = ?",
+        ((now - timedelta(days=200)).isoformat(), exp_old.id),
+    )
+    await engine.store.db.commit()
+
+    results = await engine.search(exp_type="solution")
+
+    assert [r.id for r in results] == [exp_fresh.id, exp_mid.id, exp_old.id]
+
+
+def test_relevance_bucket_quantization():
+    """relevance_bucket rounds to 0.05-wide buckets: near-identical fresh
+    relevances land in the same bucket; decayed values land lower."""
+    # Microsecond-age differences (both ~1.0) must NOT separate entries.
+    assert relevance_bucket(0.999999) == relevance_bucket(0.98)
+    # A genuinely decayed value lands in a lower bucket.
+    assert relevance_bucket(0.25) < relevance_bucket(0.95)
 
 
 @pytest.mark.asyncio
