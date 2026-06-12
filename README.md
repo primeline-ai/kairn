@@ -172,6 +172,12 @@ relevance(t) = initial_score × e^(-decay_rate × days)
 - Auto-promotion: 5+ accesses → permanent node
 - Node access tracking: `kn_recall`, `kn_context`, and `kn_crossref` log which nodes were accessed, feeding the decay and promotion pipeline
 
+## Benchmarks
+
+Kairn scores **56.2% overall on LongMemEval-S** (500 questions, GPT-4o reader
++ judge), with a published per-category breakdown and reproduction protocol in
+[BENCHMARKS.md](BENCHMARKS.md). Recall latency is ~1.4 ms per query.
+
 ## CLI
 
 ```bash
@@ -206,7 +212,7 @@ ruff check src/ && ruff format src/
 
 ```
 src/kairn/
-├── server.py              # FastMCP server + 18 tools
+├── server.py              # FastMCP server + 21 tools
 ├── cli.py                 # CLI commands
 ├── config.py              # Configuration
 ├── core/
