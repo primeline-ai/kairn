@@ -7,6 +7,7 @@ to the knowledge graph.
 
 import logging
 import math
+import os
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,14 +20,32 @@ from kairn.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
-# Default half-lives by type (in days)
+# Default half-lives by type (in days). SINGLE SOURCE OF TRUTH for decay
+# (config.py:Config.decay_rate_for_type delegates here).
+#
+# Calibrated 2026-06-13 against the REAL access tail of a 6483-experience
+# production store (scripts/calibrate_halflives.py is the re-runnable
+# derivation). The prior values (solution 200 / pattern 300 / decision 100 /
+# workaround 50 / gotcha 200) were 3-21x longer than the observed p95 re-access
+# interval, leaving decay effectively inactive. These are anchored at ~1.5-2x
+# the observed p99 re-access interval per type (so a fact still re-accessed at
+# its p99 tail sits at ~0.6-0.7 relevance, not near-zero - "calibrate on the
+# tail, never the mean"). Observed p99 days: solution 53.5, pattern 40.5,
+# decision 71.0, gotcha 32.4; workaround sparse (n=2) so kept conservative.
 HALF_LIVES: dict[str, float] = {
-    "solution": 200,
-    "pattern": 300,
-    "decision": 100,
-    "workaround": 50,
-    "gotcha": 200,
+    "solution": 120,   # p99 53.5d
+    "pattern": 90,     # p99 40.5d
+    "decision": 100,   # p99 71.0d (already near-calibrated)
+    "workaround": 40,  # sparse re-access signal; conservative
+    "gotcha": 70,      # p99 32.4d
 }
+
+# NOTE on the dead salience signals (audited 2026-06-13, kept honestly inert):
+# `score` is uniformly 1.0 and `relevance()` ignores both `access_count` and
+# `last_accessed`. An access-frequency/recency salience term was NOT activated:
+# the LongMemEval harness ingests + recalls within one run (age ~minutes, no
+# re-access), so it cannot measure a salience/access change - activating it
+# would be an unmeasured guess. Left inert and documented rather than invented.
 
 # Confidence multipliers for decay_rate
 CONFIDENCE_MULTIPLIERS: dict[str, float] = {
@@ -339,8 +358,14 @@ class ExperienceEngine:
             scored.sort(key=lambda pair: pair[1], reverse=True)
 
         ordered = [exp for exp, _ in scored]
-        diversified = self._diversify_by_session(ordered)
-        return diversified[:limit]
+        # Session/entity diversification is an operator-toggleable kill-switch
+        # (default ON). Set KAIRN_BITEMPORAL_DIVERSIFY=0 to use as-of validity
+        # filtering alone without diversification. Diversification raises
+        # answer-session coverage but can dilute answer-content density (a
+        # benchmarked regression, Kairn daf5cd8e) - the switch isolates the two.
+        if os.environ.get("KAIRN_BITEMPORAL_DIVERSIFY", "1") != "0":
+            ordered = self._diversify_by_session(ordered)
+        return ordered[:limit]
 
     @staticmethod
     def _diversify_by_session(experiences: list[Experience]) -> list[Experience]:

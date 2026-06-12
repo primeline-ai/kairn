@@ -22,12 +22,15 @@ class Config:
     fts5_enabled: bool = True
     wal_mode: bool = True
 
-    # Decay defaults (half-lives in days)
-    decay_solution: float = 200.0
-    decay_pattern: float = 300.0
+    # Decay half-lives (days). DEPRECATED as a source: the live decay path is
+    # core/experience.py:HALF_LIVES (decay_rate_for_type below delegates to it).
+    # Retained for backward compatibility, mirroring the calibrated 2026-06-13
+    # values; do not read directly - call decay_rate_for_type() (one source).
+    decay_solution: float = 120.0
+    decay_pattern: float = 90.0
     decay_decision: float = 100.0
-    decay_workaround: float = 50.0
-    decay_gotcha: float = 200.0
+    decay_workaround: float = 40.0
+    decay_gotcha: float = 70.0
 
     # Promotion threshold
     promotion_access_count: int = 5
@@ -81,18 +84,16 @@ class Config:
         return self.workspaces_dir / f"ws_{workspace_id}.db"
 
     def decay_rate_for_type(self, experience_type: str) -> float:
-        """Convert half-life to decay rate: rate = ln(2) / half_life."""
-        import math
+        """Convert half-life to decay rate: rate = ln(2) / half_life.
 
-        half_lives = {
-            "solution": self.decay_solution,
-            "pattern": self.decay_pattern,
-            "decision": self.decay_decision,
-            "workaround": self.decay_workaround,
-            "gotcha": self.decay_gotcha,
-        }
-        half_life = half_lives.get(experience_type, self.decay_solution)
-        return math.log(2) / half_life
+        Delegates to the single source of truth, core/experience.py:HALF_LIVES,
+        so config and the live engine cannot drift. Local import avoids an
+        import cycle (config has no module-level engine dependency).
+        """
+        from kairn.core.experience import HALF_LIVES, decay_rate_from_half_life
+
+        half_life = HALF_LIVES.get(experience_type, HALF_LIVES["solution"])
+        return decay_rate_from_half_life(half_life)
 
     def confidence_multiplier(self, confidence: str) -> float:
         """Get decay multiplier for confidence level."""

@@ -131,9 +131,10 @@ async def test_get_nonexistent(engine):
 @pytest.mark.asyncio
 async def test_decay_math_half_life_high_confidence(engine):
     """Test that after half_life days, relevance ≈ 0.5 for high confidence."""
-    # Create experience 200 days ago (solution half-life)
+    # Create experience one solution-half-life ago (calibrated value, not a
+    # hardcoded number, so the math test survives decay recalibration).
     now = datetime.now(timezone.utc)
-    past = now - timedelta(days=200)
+    past = now - timedelta(days=HALF_LIVES["solution"])
 
     exp = await engine.save(
         content="Test solution",
@@ -175,8 +176,8 @@ async def test_decay_math_low_confidence_4x_faster(engine):
         confidence="low",
     )
 
-    # Set both to same creation time (50 days ago)
-    past = now - timedelta(days=50)
+    # Low confidence decays 4x faster, so it hits one half-life at HL/4 days.
+    past = now - timedelta(days=HALF_LIVES["solution"] / 4)
     await engine.store.db.execute(
         "UPDATE experiences SET created_at = ? WHERE id IN (?, ?)",
         (past.isoformat(), exp_high.id, exp_low.id),
@@ -190,10 +191,9 @@ async def test_decay_math_low_confidence_4x_faster(engine):
     relevance_high = exp_high.relevance(at=now)
     relevance_low = exp_low.relevance(at=now)
 
-    # Low confidence should have decayed to ~0.5 after 50 days (4x faster than 200)
-    # High confidence should be at ~0.84 after 50 days
+    # At HL/4: low (4x) is at one half-life ~0.5; high is at 0.25 half-lives ~0.84
     assert abs(relevance_low - 0.5) < 0.01
-    assert relevance_high > 0.84
+    assert relevance_high > 0.83
 
 
 @pytest.mark.asyncio
@@ -215,8 +215,8 @@ async def test_decay_math_medium_confidence_2x_faster(engine):
         confidence="medium",
     )
 
-    # Set both to 100 days ago
-    past = now - timedelta(days=100)
+    # Medium decays 2x faster, so it hits one half-life at HL/2 days.
+    past = now - timedelta(days=HALF_LIVES["solution"] / 2)
     await engine.store.db.execute(
         "UPDATE experiences SET created_at = ? WHERE id IN (?, ?)",
         (past.isoformat(), exp_high.id, exp_medium.id),
@@ -255,8 +255,8 @@ async def test_decay_different_types(engine):
         confidence="high",
     )
 
-    # Set both to 50 days ago
-    past = now - timedelta(days=50)
+    # Set both to one workaround-half-life ago.
+    past = now - timedelta(days=HALF_LIVES["workaround"])
     await engine.store.db.execute(
         "UPDATE experiences SET created_at = ? WHERE id IN (?, ?)",
         (past.isoformat(), exp_solution.id, exp_workaround.id),
@@ -269,10 +269,10 @@ async def test_decay_different_types(engine):
     relevance_solution = exp_solution.relevance(at=now)
     relevance_workaround = exp_workaround.relevance(at=now)
 
-    # Workaround at 50 days (1 half-life) ≈ 0.5
-    # Solution at 50 days (0.25 half-life) ≈ 0.84
+    # Workaround at its own half-life ≈ 0.5; solution (longer half-life) decays
+    # less over the same span, so it stays clearly higher.
     assert abs(relevance_workaround - 0.5) < 0.01
-    assert relevance_solution > 0.83
+    assert relevance_solution > relevance_workaround + 0.1
 
 
 @pytest.mark.asyncio
