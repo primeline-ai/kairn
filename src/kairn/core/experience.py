@@ -68,6 +68,28 @@ def relevance_bucket(value: float) -> int:
     return round(value / RELEVANCE_BUCKET_SIZE)
 
 
+def derive_entity_key(content: str, tags: list[str] | None) -> str | None:
+    """Derive a deterministic cross-session entity grouping key (rule-based).
+
+    No LLM, no embeddings (air-gap + dependency-light constraint). The subject
+    of an experience is taken from its FIRST tag, normalized (lowercased,
+    trimmed). Tags are the explicit subject signal in Kairn; experiences about
+    the same subject across sessions share the first tag and therefore group.
+    Returns None when there are no tags (recall then falls back to the
+    session/valid-time-diverse path, which is the validated multi-session
+    lever - entity grouping is the secondary mechanism).
+
+    Deterministic and seed-stable: same (content, tags) always yields the same
+    key. `content` is accepted for signature stability and future heuristics
+    but is intentionally not used in v1 (tag-only keying avoids the noise of
+    free-text subject extraction).
+    """
+    if not tags:
+        return None
+    key = tags[0].strip().lower()
+    return key or None
+
+
 class ExperienceEngine:
     """Engine for managing experiences with decay and promotion."""
 
@@ -144,6 +166,7 @@ class ExperienceEngine:
             tags=tags or [],
             valid_from=valid_from,
             valid_to=valid_to,
+            entity_key=derive_entity_key(content, tags),
         )
 
         # Insert into store
@@ -251,6 +274,110 @@ class ExperienceEngine:
 
         # Apply pagination
         return experiences[offset : offset + limit]
+
+    async def search_bitemporal(
+        self,
+        *,
+        text: str | None = None,
+        exp_type: str | None = None,
+        min_relevance: float = 0.0,
+        limit: int = 10,
+        as_of: str | None = None,
+    ) -> list[Experience]:
+        """Bi-temporal-aware recall over the experience layer.
+
+        Same BM25 + decay-bucket ordering as `search()`, then two orthogonal
+        bi-temporal refinements (both no-ops when the data lacks the signal, so
+        this degrades to an identical BM25 result - the fallback-identity
+        contract):
+
+        1. **as-of validity** (temporal-reasoning): if `as_of` is given, drop
+           experiences whose `valid_from` is strictly AFTER `as_of` (facts not
+           yet true at the query time). NULL-`valid_from` experiences are always
+           eligible. `valid_to` is NOT consulted here - validity-END is a
+           separate concern and never affects recall ordering, preserving the
+           decay/validity orthogonality.
+        2. **session/entity diversification** (multi-session): re-rank so the
+           head of the result spreads across distinct subjects/sessions. The
+           diversity key is `entity_key` when present, else `valid_from` (the
+           session/valid-time key). Round 1 takes the best (BM25-first)
+           experience per distinct key; round 2 fills remaining slots with the
+           leftovers in BM25 order. Experiences with NO diversity key (both
+           None) are never merged - each is its own group - so a store with no
+           windows/entities is returned unchanged.
+
+        This is the recall path the LongMemEval harness measures via
+        `--recall-mode bitemporal`; the validated multi-session lever is the
+        diversification step (Kairn `7784817d`).
+        """
+        fts_text: str | None
+        if text is not None:
+            fts_text = to_fts_query(text)
+            if fts_text is None:
+                return []
+        else:
+            fts_text = None
+
+        results = await self.store.query_experiences(
+            text=fts_text, exp_type=exp_type, limit=100000, offset=0
+        )
+
+        now = datetime.now(UTC)
+        scored: list[tuple[Experience, float]] = []
+        for data in results:
+            exp = Experience(**data)
+            # as-of validity filter (valid-time, NOT valid_to / decay).
+            if as_of is not None and exp.valid_from is not None and exp.valid_from > as_of:
+                continue
+            current_relevance = exp.relevance(at=now)
+            if current_relevance >= min_relevance:
+                scored.append((exp, current_relevance))
+
+        if fts_text is not None:
+            scored.sort(key=lambda pair: relevance_bucket(pair[1]), reverse=True)
+        else:
+            scored.sort(key=lambda pair: pair[1], reverse=True)
+
+        ordered = [exp for exp, _ in scored]
+        diversified = self._diversify_by_session(ordered)
+        return diversified[:limit]
+
+    @staticmethod
+    def _diversify_by_session(experiences: list[Experience]) -> list[Experience]:
+        """Re-rank a BM25-ordered list for session/entity diversity.
+
+        Round 1: best experience per distinct diversity key (entity_key else
+        valid_from). Round 2: remaining experiences in original order. Keys that
+        are None never merge (each such experience is its own group), so a list
+        with no windows/entities is returned unchanged (fallback identity).
+        """
+        seen: set[str] = set()
+        head: list[Experience] = []
+        tail: list[Experience] = []
+        for exp in experiences:
+            key = exp.entity_key or exp.valid_from
+            if key is None:
+                head.append(exp)  # no diversity signal -> keep in place
+            elif key not in seen:
+                seen.add(key)
+                head.append(exp)
+            else:
+                tail.append(exp)
+        return head + tail
+
+    async def group_by_entity(
+        self, entity_key: str, *, limit: int = 1000
+    ) -> list[Experience]:
+        """Return the cross-session timeline for an entity.
+
+        Given a normalized entity_key (see `derive_entity_key`), return every
+        experience sharing it - across sessions/namespaces - ordered by
+        valid-time (valid_from, falling back to created_at). This is the
+        cross-session aggregation helper the bi-temporal recall path uses for
+        multi-session questions. Empty list for an unknown key.
+        """
+        rows = await self.store.get_experiences_by_entity_key(entity_key, limit=limit)
+        return [Experience(**data) for data in rows]
 
     async def touch_accessed(self, exp_ids: list[str]) -> int:
         """Batch-increment access_count for a list of experience IDs.

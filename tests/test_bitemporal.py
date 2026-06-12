@@ -160,3 +160,108 @@ def test_closed_validity_still_decays_on_own_schedule():
     r_early = superseded.relevance(at=datetime(2026, 1, 2, tzinfo=UTC))
     r_late = superseded.relevance(at=datetime(2026, 3, 1, tzinfo=UTC))
     assert r_early > r_late > 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: rule-based cross-session entity grouping (no LLM, no embeddings)
+# ---------------------------------------------------------------------------
+
+def test_derive_entity_key_is_deterministic():
+    """Same (content, tags) -> same key, every call. Seed-stable, no randomness."""
+    from kairn.core.experience import derive_entity_key
+    k1 = derive_entity_key("the user prefers Premiere Pro", ["video-editing", "tools"])
+    k2 = derive_entity_key("a totally different sentence", ["Video-Editing"])
+    assert k1 == derive_entity_key("the user prefers Premiere Pro", ["video-editing", "tools"])
+    # normalization: case-insensitive, same tag -> same key regardless of content
+    assert k1 == k2
+
+
+def test_derive_entity_key_none_without_tags():
+    """No tags -> no entity key (recall falls back to session/valid-time)."""
+    from kairn.core.experience import derive_entity_key
+    assert derive_entity_key("some content", None) is None
+    assert derive_entity_key("some content", []) is None
+
+
+async def test_save_sets_entity_key_from_tags(store: SQLiteStore):
+    engine = ExperienceEngine(store, EventBus())
+    exp = await engine.save(content="x", type="pattern", tags=["Model-Kits", "hobby"])
+    assert exp.entity_key == "model-kits"
+    got = await store.get_experience(exp.id)
+    assert got["entity_key"] == "model-kits"
+
+
+async def test_group_by_entity_aggregates_across_sessions(store: SQLiteStore):
+    """Two saves in different namespaces (sessions) about the same subject group
+    together; a different subject does not merge in."""
+    engine = ExperienceEngine(store, EventBus())
+    await engine.save(content="bought an F-15 kit", type="pattern",
+                      tags=["model-kits"], namespace="sess-a")
+    await engine.save(content="started a Spitfire kit", type="pattern",
+                      tags=["Model-Kits"], namespace="sess-b")
+    await engine.save(content="unrelated", type="pattern",
+                      tags=["cooking"], namespace="sess-a")
+    grouped = await engine.group_by_entity("model-kits")
+    assert len(grouped) == 2
+    contents = {e.content for e in grouped}
+    assert contents == {"bought an F-15 kit", "started a Spitfire kit"}
+
+
+async def test_group_by_entity_no_false_merge(store: SQLiteStore):
+    engine = ExperienceEngine(store, EventBus())
+    await engine.save(content="a", type="pattern", tags=["aviation"])
+    await engine.save(content="b", type="pattern", tags=["automobiles"])
+    assert len(await engine.group_by_entity("aviation")) == 1
+    assert len(await engine.group_by_entity("automobiles")) == 1
+    assert await engine.group_by_entity("nonexistent") == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: bi-temporal-aware recall (session/valid-time diversification + as-of)
+# ---------------------------------------------------------------------------
+
+async def test_search_bitemporal_fallback_identity_without_windows(store: SQLiteStore):
+    """With no valid_from and no entity_key on any row, bitemporal recall returns
+    the SAME ordered set as the baseline engine search (pure BM25 fallback)."""
+    engine = ExperienceEngine(store, EventBus())
+    for i in range(5):
+        await engine.save(content=f"alpha beta gamma item {i}", type="pattern")
+    base = await engine.search(text="alpha beta", limit=8)
+    bit = await engine.search_bitemporal(text="alpha beta", limit=8)
+    assert [e.id for e in base] == [e.id for e in bit]
+
+
+async def test_search_bitemporal_diversifies_by_session(store: SQLiteStore):
+    """When one session has many matching turns and another has one, baseline
+    top-k can miss the second session; bitemporal diversification surfaces it."""
+    engine = ExperienceEngine(store, EventBus())
+    # Session A (valid_from = day 1): 8 matching, verbose turns
+    for i in range(8):
+        await engine.save(content=f"project alpha update {i}", type="pattern",
+                          valid_from="2023/01/01 (Sun) 10:00")
+    # Session B (valid_from = day 2): a single matching turn
+    await engine.save(content="project alpha kickoff", type="pattern",
+                      valid_from="2023/01/02 (Mon) 10:00")
+    base = await engine.search(text="project alpha", limit=3)
+    bit = await engine.search_bitemporal(text="project alpha", limit=3)
+    base_sessions = {e.valid_from for e in base}
+    bit_sessions = {e.valid_from for e in bit}
+    # bitemporal surfaces BOTH sessions in the top-3; baseline may miss day-2
+    assert "2023/01/02 (Mon) 10:00" in bit_sessions
+    assert len(bit_sessions) >= len(base_sessions)
+
+
+async def test_search_bitemporal_as_of_filters_future_validity(store: SQLiteStore):
+    """as_of=T excludes facts whose valid_from is AFTER T (not yet true);
+    NULL-valid_from facts are always eligible."""
+    engine = ExperienceEngine(store, EventBus())
+    await engine.save(content="price was ten dollars", type="pattern",
+                      valid_from="2023/01/01 (Sun) 10:00")
+    await engine.save(content="price became twenty dollars", type="pattern",
+                      valid_from="2023/03/01 (Wed) 10:00")
+    # As of February, only the January fact is valid.
+    res = await engine.search_bitemporal(text="price dollars", limit=8,
+                                         as_of="2023/02/01 (Wed) 00:00")
+    froms = {e.valid_from for e in res}
+    assert "2023/01/01 (Sun) 10:00" in froms
+    assert "2023/03/01 (Wed) 10:00" not in froms

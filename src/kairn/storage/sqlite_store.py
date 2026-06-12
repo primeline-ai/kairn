@@ -542,6 +542,31 @@ class SQLiteStore(StorageBackend):
         rows = await cursor.fetchall()
         return [_row_to_dict(row) for row in rows]
 
+    async def get_experiences_by_entity_key(
+        self, entity_key: str, *, limit: int = 1000
+    ) -> list[dict[str, Any]]:
+        """Return experiences sharing an entity_key, ordered by valid-time.
+
+        The cross-session entity timeline: experiences about the same subject
+        across sessions/namespaces, ordered by valid_from (falling back to
+        created_at when no validity window is set). Used by the bi-temporal
+        recall path's entity-aggregation mode.
+        """
+        # Order windowed (valid_from set) experiences first by their valid-time,
+        # then un-windowed ones by transaction-time. Sorting in two separate
+        # keys avoids mixing the "YYYY/MM/DD ..." valid_from format with the
+        # ISO-8601 created_at format inside one comparison (which would be
+        # lexically incoherent for a mixed cohort).
+        cursor = await self.db.execute(
+            """SELECT * FROM experiences
+               WHERE entity_key = ?
+               ORDER BY valid_from IS NULL ASC, valid_from ASC, created_at ASC
+               LIMIT ?""",
+            (entity_key, limit),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(row) for row in rows]
+
     async def increment_access_count(self, exp_id: str) -> dict[str, Any] | None:
         cursor = await self.db.execute(
             """UPDATE experiences
