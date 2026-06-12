@@ -86,3 +86,24 @@ the same call `kn_memories` makes). To reproduce:
 
 Latency-only benchmarks (insert/query throughput at scale) are available via
 `kairn benchmark <workspace>`.
+
+## Bi-Temporal Level-Up: findings (2026-06-13)
+
+A bi-temporal recall mode (`search_bitemporal`: as-of validity filtering +
+session/valid-time diversification) was built behind a flag and measured
+head-to-head. It **regressed** on LongMemEval-S (pilot-50: overall 0.38 vs 0.54
+baseline, temporal-reasoning 0.0, multi-session 0.31). Diagnosis: returning
+session-diverse excerpts trades match-strength density for breadth, so the
+reader gets the right *sessions* but not the right *content* and abstains. An
+ablation (diversification off, as-of only) recovered to 0.50 but stayed below
+baseline. **Conclusion: plain BM25 + decay (`ExperienceEngine.search`) remains
+the recall path; the bitemporal mode is flag-gated and off by default.** The
+single-session-preference 10% category was diagnosed as a reader/task-framing
+ceiling, not an engine recall defect (the right evidence already lands in the
+top-8 for 25/30 questions).
+
+The bi-temporal **schema** (`valid_from`/`valid_to` valid-time window,
+orthogonal to decay) and a rule-based cross-session `entity_key` ship as
+additive infrastructure. Decay `HALF_LIVES` were recalibrated against the real
+access tail (`scripts/calibrate_halflives.py`; prior values were 3-21x longer
+than observed p95 re-access).
