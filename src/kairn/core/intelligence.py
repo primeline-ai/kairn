@@ -6,13 +6,13 @@ Bridges graph, experience, and router engines into unified knowledge operations.
 from __future__ import annotations
 
 import logging
-import re
 import sqlite3
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 from kairn.core.experience import ExperienceEngine
+from kairn.core.fts import _to_fts_query  # used here + re-exported for back-compat
 from kairn.core.graph import GraphEngine
 from kairn.core.ideas import IdeaEngine
 from kairn.core.memory import ProjectMemory
@@ -24,85 +24,9 @@ from kairn.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
-_STOP_WORDS = {
-    "the",
-    "a",
-    "an",
-    "is",
-    "are",
-    "was",
-    "were",
-    "be",
-    "been",
-    "being",
-    "have",
-    "has",
-    "had",
-    "do",
-    "does",
-    "did",
-    "will",
-    "would",
-    "could",
-    "should",
-    "may",
-    "might",
-    "can",
-    "shall",
-    "to",
-    "of",
-    "in",
-    "for",
-    "on",
-    "with",
-    "at",
-    "by",
-    "from",
-    "as",
-    "into",
-    "about",
-    "and",
-    "or",
-    "but",
-    "not",
-    "no",
-    "so",
-    "yet",
-    "i",
-    "me",
-    "we",
-    "us",
-    "you",
-    "he",
-    "she",
-    "it",
-    "they",
-    "them",
-    "my",
-    "your",
-    "his",
-    "her",
-    "its",
-    "our",
-    "their",
-    "this",
-    "that",
-    "these",
-    "those",
-    "need",
-    "want",
-    "try",
-}
-
-
-def _to_fts_query(text: str) -> str | None:
-    """Convert natural language to FTS5 OR query with proper escaping."""
-    words = re.findall(r"[a-zA-Z0-9_]+", text.lower())
-    fts_reserved = {"and", "or", "not", "near"}
-    keywords = [w for w in words if w not in _STOP_WORDS and w not in fts_reserved and len(w) > 2]
-    if not keywords:
-        return None
-    return " OR ".join(f'"{w}"' for w in keywords)
+# FTS5 query shaping (_to_fts_query, _STOP_WORDS) now lives in core.fts and is
+# re-exported via the top-of-module import so the experience path can share it
+# without an import cycle. See core/fts.py.
 
 
 # Max candidates returned by kn_learn FTS5 scan. Set conservatively;

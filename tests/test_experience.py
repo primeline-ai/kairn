@@ -1161,3 +1161,53 @@ class TestPromotePending:
         # The "should-be-rolled-back" node must NOT exist.
         rolled = await store.get_node("should-be-rolled-back")
         assert rolled is None
+
+
+# ---------------------------------------------------------------------------
+# FTS query shaping (kn_memories crash-proofing + benchmark-path alignment).
+# Regression for the live gotcha: hyphenated / reserved-word queries reached
+# SQLite FTS5 MATCH verbatim and raised OperationalError ("no such column:
+# <suffix>"). search() now routes free text through core.fts.to_fts_query,
+# the same helper the intelligence layer and the LongMemEval harness use.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_hyphenated_query_does_not_crash(engine):
+    """A hyphenated term must not raise and must still find the match."""
+    await engine.save(
+        type="gotcha",
+        content="system weakness gap audit drift self-healing loop",
+        confidence="high",
+    )
+    results = await engine.search(text="self-healing", limit=5)
+    assert len(results) == 1
+    assert "self-healing" in results[0].content
+
+
+@pytest.mark.asyncio
+async def test_search_reserved_word_query_does_not_crash(engine):
+    """A bare FTS5 reserved word (AND/OR/NOT/NEAR) must not raise."""
+    await engine.save(type="solution", content="plain content here", confidence="high")
+    # "AND" alone yields no searchable keyword -> empty, never an exception.
+    assert await engine.search(text="AND", limit=5) == []
+    assert await engine.search(text="a OR b", limit=5) == []
+
+
+@pytest.mark.asyncio
+async def test_search_multi_term_uses_or_semantics(engine):
+    """Multi-term queries match ANY keyword (OR), aligning kn_memories with
+    its sibling tools and the benchmarked recall path."""
+    await engine.save(type="pattern", content="alpha tooling notes", confidence="high")
+    await engine.save(type="pattern", content="beta tooling notes", confidence="high")
+    results = await engine.search(text="alpha beta", limit=10)
+    contents = {r.content for r in results}
+    assert "alpha tooling notes" in contents
+    assert "beta tooling notes" in contents
+
+
+@pytest.mark.asyncio
+async def test_search_all_stopwords_returns_empty(engine):
+    """A query with no searchable keyword returns [] rather than matching all."""
+    await engine.save(type="solution", content="real durable content", confidence="high")
+    assert await engine.search(text="the a is of", limit=5) == []

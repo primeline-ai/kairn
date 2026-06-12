@@ -10,6 +10,7 @@ import math
 from datetime import UTC, datetime
 from typing import Any
 
+from kairn.core.fts import to_fts_query
 from kairn.events.bus import EventBus
 from kairn.events.types import EventType
 from kairn.models.experience import VALID_CONFIDENCES, VALID_TYPES, Experience
@@ -191,9 +192,26 @@ class ExperienceEngine:
             strength is the primary order and decay-relevance acts as a
             coarse tiebreak; without text, sorted by relevance descending.
         """
+        # Shape free-text into a safe FTS5 query (quoted OR of keywords). This
+        # is the same helper the intelligence layer (kn_recall/kn_context) and
+        # the LongMemEval benchmark use, so kn_memories now runs the identical,
+        # crash-proof recall path. Raw text would let bare hyphens / reserved
+        # words reach MATCH and raise OperationalError ("no such column: ...").
+        # If the query has no searchable keyword, there is nothing to match.
+        # Re-shaping an already-shaped query is idempotent (quotes/OR are
+        # stripped by the tokenizer and the surviving keywords re-quote to the
+        # same string), so callers that pre-shape stay correct.
+        fts_text: str | None
+        if text is not None:
+            fts_text = to_fts_query(text)
+            if fts_text is None:
+                return []
+        else:
+            fts_text = None
+
         # Query from store (the FTS path returns rows in BM25 match order)
         results = await self.store.query_experiences(
-            text=text,
+            text=fts_text,
             exp_type=exp_type,
             limit=100000,  # Get all first, filter by relevance
             offset=0,
@@ -210,7 +228,7 @@ class ExperienceEngine:
             if current_relevance >= min_relevance:
                 scored.append((exp, current_relevance))
 
-        if text:
+        if fts_text is not None:
             # Match strength stays primary: quantize relevance into coarse
             # buckets and stable-sort by bucket, so the store's BM25 order
             # survives within each bucket. Sorting by exact relevance would
