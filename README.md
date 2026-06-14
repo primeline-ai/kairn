@@ -5,7 +5,7 @@
 
 > Context-aware knowledge engine for AI assistants.
 
-Other tools give your AI a memory. **Kairn** gives it a knowledge graph with intelligent context routing. It knows what to load, when to load it, and how much — so your AI stays focused, not overwhelmed.
+Other tools give your AI a memory. **Kairn** gives it a knowledge graph with intelligent context routing. It knows what to load, when to load it, and how much - so your AI stays focused, not overwhelmed.
 
 ```bash
 pip install kairn-ai
@@ -15,15 +15,15 @@ kairn serve ~/brain
 
 ## Why Kairn?
 
-Every AI conversation starts from scratch. Previous insights, decisions, and patterns — gone. Existing memory tools store flat key-value pairs that can't represent relationships or surface the *right* context at the *right* time.
+Every AI conversation starts from scratch. Previous insights, decisions, and patterns - gone. Existing memory tools store flat key-value pairs that can't represent relationships or surface the *right* context at the *right* time.
 
 Kairn is different:
 
-- **Context Router + Progressive Disclosure** — Automatically loads relevant subgraphs based on keywords, starting with summaries and drilling into details only when needed. No other tool does this.
-- **Knowledge Graph with FTS5** — Not flat storage. Typed relationships (`depends-on`, `resolves`, `causes`) between nodes with provenance tracking and full-text search across everything.
-- **Experience Decay + Auto-Promotion** — Experiences lose relevance over time (biological decay model). Frequently-accessed experiences auto-promote to permanent knowledge. Your AI naturally forgets what doesn't matter.
-- **21 MCP Tools** — Works with Claude Desktop, Cursor, VS Code, Windsurf, and any MCP client. Includes `kn_judge` for 5-verb relationship judgments and `kn_doctor` for read-only health diagnostics.
-- **Team Workspaces with RBAC** — Per-workspace isolation with JWT auth and role-based access control.
+- **Context Router + Progressive Disclosure** - Automatically loads relevant subgraphs based on keywords, starting with summaries and drilling into details only when needed. No other tool does this.
+- **Knowledge Graph with FTS5** - Not flat storage. Typed relationships (`depends-on`, `resolves`, `causes`) between nodes with provenance tracking and full-text search across everything.
+- **Experience Decay + Auto-Promotion** - Experiences lose relevance over time (biological decay model). Frequently-accessed experiences auto-promote to permanent knowledge. Your AI naturally forgets what doesn't matter.
+- **21 MCP Tools** - Works with Claude Desktop, Cursor, VS Code, Windsurf, and any MCP client. Includes `kn_judge` for 5-verb relationship judgments and `kn_doctor` for read-only health diagnostics.
+- **Per-Workspace Isolation** - Each workspace is its own isolated SQLite store. JWT auth and role-based access control (owner / maintainer / contributor / reader) ship for team deployments.
 
 ## Quick Start
 
@@ -85,13 +85,14 @@ All tools follow MCP protocol with JSON responses.
 | `kn_projects` | List projects, switch active |
 | `kn_log` | Log progress or failure entry |
 
-### Experience Memory (3)
+### Experience Memory (4)
 
 | Tool | Description |
 |------|-------------|
 | `kn_save` | Save experience with decay |
 | `kn_memories` | Decay-aware experience search |
 | `kn_prune` | Remove expired experiences |
+| `kn_promote_pending` | Promote high-access experiences to permanent nodes |
 
 ### Ideas (2)
 
@@ -100,16 +101,15 @@ All tools follow MCP protocol with JSON responses.
 | `kn_idea` | Create or update idea |
 | `kn_ideas` | List/filter ideas by status, category |
 
-### Intelligence (6)
+### Intelligence (5)
 
 | Tool | Description |
 |------|-------------|
 | `kn_learn` | Store knowledge with confidence routing |
 | `kn_recall` | Surface relevant past knowledge |
-| `kn_crossref` | Find similar solutions across workspaces |
+| `kn_crossref` | Find similar past solutions in the current workspace |
 | `kn_context` | Keywords → relevant subgraph with progressive disclosure |
-| `kn_related` | Graph traversal (BFS/DFS) to find connected ideas |
-| `kn_promote_pending` | Promote high-access experiences to permanent nodes |
+| `kn_related` | Graph traversal (BFS) to find connected nodes |
 
 ### Diagnostic (1)
 
@@ -120,13 +120,13 @@ All tools follow MCP protocol with JSON responses.
 ## Resources & Prompts
 
 **Resources** (read-only context for MCP clients):
-- `kn://status` — Graph overview, active project
-- `kn://projects` — All projects with recent progress
-- `kn://memories` — Recent high-relevance experiences
+- `kn://status` - Graph overview, active project
+- `kn://projects` - All projects with recent progress
+- `kn://memories` - Recent high-relevance experiences
 
 **Prompts** (session management):
-- `kn_bootup` — Load active project, recent progress, and top memories (session start)
-- `kn_review` — Summarize session and suggest next steps (session end)
+- `kn_bootup` - Load active project, recent progress, and top memories (session start)
+- `kn_review` - Summarize session and suggest next steps (session end)
 
 ## How It Works
 
@@ -159,11 +159,13 @@ relevance(t) = initial_score × e^(-decay_rate × days)
 
 | Type | Half-life | Notes |
 |------|-----------|-------|
-| solution | 200 days | Stable, durable |
-| pattern | 300 days | Architectural knowledge |
+| solution | 120 days | Stable, durable |
+| pattern | 90 days | Architectural knowledge |
 | decision | 100 days | Context-dependent |
-| workaround | 50 days | Temporary fixes fade fast |
-| gotcha | 200 days | Tricky pitfalls stay relevant |
+| workaround | 40 days | Temporary fixes fade fast |
+| gotcha | 70 days | Tricky pitfalls stay relevant |
+
+Half-lives are calibrated against the real access tail of a production experience store, not guessed.
 
 **Confidence routing** via `kn_learn`:
 - `high` → Permanent node + experience (no decay)
@@ -216,9 +218,9 @@ src/kairn/
 ├── cli.py                 # CLI commands
 ├── config.py              # Configuration
 ├── core/
-│   ├── graph.py           # GraphEngine (5 tools)
+│   ├── graph.py           # GraphEngine (6 tools)
 │   ├── memory.py          # ProjectMemory (3 tools)
-│   ├── experience.py      # ExperienceEngine (3 tools)
+│   ├── experience.py      # ExperienceEngine (4 tools)
 │   ├── ideas.py           # IdeaEngine (2 tools)
 │   ├── intelligence.py    # IntelligenceLayer (5 tools)
 │   └── router.py          # ContextRouter
@@ -240,7 +242,7 @@ Typical operation times on modern hardware:
 | `kn_query` (100 nodes) | 5-15ms |
 | `kn_connect` | 1-3ms |
 | `kn_recall` (graph traversal) | 10-50ms |
-| `kn_crossref` (cross-workspace) | 20-100ms |
+| `kn_crossref` (similarity search) | 20-100ms |
 
 ## Used By
 
@@ -259,7 +261,7 @@ MIT
 
 | Tool | What It Does | Deep Dive |
 |------|-------------|-----------|
-| [**Evolving Lite**](https://github.com/primeline-ai/evolving-lite) | Self-improving Claude Code plugin — memory, delegation, self-correction | [Blog](https://primeline.cc/blog/knowledge-architecture) |
+| [**Evolving Lite**](https://github.com/primeline-ai/evolving-lite) | Self-improving Claude Code plugin - memory, delegation, self-correction | [Blog](https://primeline.cc/blog/knowledge-architecture) |
 | [**Kairn**](https://github.com/primeline-ai/kairn) | Persistent knowledge graph with context routing for AI | [Blog](https://primeline.cc/blog/knowledge-architecture) |
 | [**tmux Orchestration**](https://github.com/primeline-ai/claude-tmux-orchestration) | Parallel Claude Code sessions with heartbeat monitoring | [Blog](https://primeline.cc/blog/tmux-orchestration) |
 | [**UPF**](https://github.com/primeline-ai/universal-planning-framework) | 3-stage planning with adversarial hardening | [Blog](https://primeline.cc/blog/planning-framework-dsv-reasoning) |
