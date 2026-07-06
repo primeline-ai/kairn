@@ -5,6 +5,10 @@
 
 > Context-aware knowledge engine for AI assistants.
 
+**Status: Alpha (v0.1.0).** The API and CLI are functional and tested (see
+[Development](#development)), but interfaces may still change between
+releases. Feedback and issues welcome.
+
 Other tools give your AI a memory. **Kairn** gives it a knowledge graph with intelligent context routing. It knows what to load, when to load it, and how much - so your AI stays focused, not overwhelmed.
 
 ```bash
@@ -12,6 +16,14 @@ pip install kairn-ai
 kairn init ~/brain
 kairn serve ~/brain
 ```
+
+Add it to Claude Code in one line:
+
+```bash
+claude mcp add kairn -- kairn serve ~/brain
+```
+
+For other clients, see [Quick Start](#quick-start) below. New to Kairn? Jump to [First 5 Minutes](#first-5-minutes).
 
 ## Why Kairn?
 
@@ -44,7 +56,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ### Cursor
 
-Add to `.cursor/mcp-servers.json`:
+Add to `.cursor/mcp.json`:
 
 ```json
 {
@@ -60,7 +72,85 @@ Add to `.cursor/mcp-servers.json`:
 }
 ```
 
+### VS Code
+
+Add to `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "kairn": {
+      "type": "stdio",
+      "command": "kairn",
+      "args": ["serve", "~/brain"]
+    }
+  }
+}
+```
+
+### Windsurf
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "kairn": {
+      "command": "kairn",
+      "args": ["serve", "~/brain"]
+    }
+  }
+}
+```
+
 Restart your editor. Kairn's 21 tools appear in the MCP section.
+
+## First 5 Minutes
+
+A guided first run, end to end:
+
+```bash
+pip install kairn-ai
+kairn init ~/brain              # creates the workspace + database
+```
+
+Add the one-liner from above (or your client's Quick Start snippet), then restart the client. Once connected, ask your assistant to remember something:
+
+> "Remember that we chose Postgres over SQLite for the analytics service because we needed concurrent writers."
+
+That calls `kn_learn` under the hood and returns a JSON envelope like this (captured from a real run, via `kairn learn`, the CLI mirror of the tool):
+
+```json
+{"_v": "1.0", "stored_as": "node", "node_id": "002d9c22", "experience_id": "d0710c2f", "type": "decision", "confidence": "high", "namespace": "knowledge", "candidates": []}
+```
+
+Start a **new** session and ask it to recall the same thing - that calls `kn_recall` and surfaces what you just stored, no re-explaining required:
+
+```json
+{"_v": "1.0", "count": 2, "results": [
+  {"source": "node", "id": "002d9c22", "name": "Decision: we chose Postgres over SQLite for the analytics service beca", "type": "learned_decision", "description": "we chose Postgres over SQLite for the analytics service because we needed concurrent writers", "relevance": 1.0},
+  {"source": "experience", "id": "d0710c2f", "type": "decision", "content": "we chose Postgres over SQLite for the analytics service because we needed concurrent writers", "confidence": "high", "relevance": 1.0}
+]}
+```
+
+`kn_learn` stored both a permanent graph node and a decaying experience (high confidence does both, see [Confidence routing](#decay-model)); `kn_recall` found both from a three-word topic.
+
+Run `kairn status ~/brain` any time as a smoke test - if it prints a JSON stats block (nodes/edges/experiences counts), the workspace is healthy. Want a scripted tour of every core feature instead of doing it by hand? Run `kairn demo ~/brain` - it walks through node creation, querying, experience saving, learning, recall, and context in about 30 seconds.
+
+### Which tool when
+
+21 tools is a lot to hold in your head on day one. Most sessions only need these:
+
+| You want to... | Use | Why |
+|---|---|---|
+| Remember something new (a decision, gotcha, pattern, solution) | `kn_learn` | Default entry point - auto-routes to a permanent node (high confidence) or a decaying experience (medium/low), no need to decide yourself |
+| Add a permanent named concept you already know is durable | `kn_add` | Skips decay entirely - for structural knowledge, not day-to-day experience |
+| Log a one-off experience with explicit confidence/decay control | `kn_save` | Lower-level primitive `kn_learn` wraps - reach for it when you want to set confidence/decay yourself |
+| Search the permanent knowledge graph by text, type, tags, or namespace | `kn_query` | You're looking for nodes, not decaying experiences |
+| Search saved experiences, ranked by relevance and decay | `kn_memories` | You're looking for experience content (solutions, gotchas, workarounds), not graph nodes |
+| Surface everything relevant to a topic in one call | `kn_recall` (flat list) or `kn_context` (subgraph, progressive disclosure: summary first, full detail on demand) | You don't know yet whether the answer is a node or an experience - let Kairn search both |
+
+Everything else (`kn_crossref`, `kn_related`, `kn_connect`, `kn_judge`, `kn_project`/`kn_projects`/`kn_log`, `kn_idea`/`kn_ideas`, `kn_promote_pending`, `kn_prune`, `kn_remove`, `kn_status`, `kn_doctor`) is advanced usage - see the full [21 Tools](#21-tools-kn_-prefix) reference below once you're past the basics.
 
 ## 21 Tools (kn_ prefix)
 

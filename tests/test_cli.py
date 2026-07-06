@@ -11,6 +11,7 @@ via tmp_path to avoid cross-test contamination.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,7 +19,9 @@ from pathlib import Path
 import pytest
 
 
-def _run_kairn(*args: str, check: bool = True) -> tuple[int, str, str]:
+def _run_kairn(
+    *args: str, check: bool = True, env: dict[str, str] | None = None
+) -> tuple[int, str, str]:
     """Run `kairn` CLI as a subprocess. Returns (returncode, stdout, stderr)."""
     cmd = [sys.executable, "-m", "kairn.cli", *args]
     result = subprocess.run(
@@ -26,6 +29,7 @@ def _run_kairn(*args: str, check: bool = True) -> tuple[int, str, str]:
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
     if check and result.returncode != 0:
         raise AssertionError(
@@ -953,3 +957,30 @@ class TestReplicationOutputShape:
         count = len(parsed) if isinstance(parsed, list) else "unknown"
         assert isinstance(count, int)
         assert count >= 1
+
+
+# ──────────────────────────────────────────────────────────
+# tilde-path expansion (MCP clients spawn subprocesses without a shell, so a
+# config arg like "~/brain" arrives as the literal 4-char string, never
+# shell-expanded - regression guard for that exact scenario)
+# ──────────────────────────────────────────────────────────
+
+
+class TestTildeExpansion:
+    def test_init_and_status_resolve_literal_tilde_path(self, tmp_path: Path):
+        """A literal, un-expanded '~/...' argument (as an MCP client would
+        pass it, with no shell in between) must resolve against HOME and
+        work end-to-end, not fail Click's own path validation.
+        """
+        fake_home = tmp_path / "fake-home"
+        fake_home.mkdir()
+        env = {**os.environ, "HOME": str(fake_home)}
+
+        rc, out, err = _run_kairn("init", "~/tilde-brain", env=env)
+        assert rc == 0, f"init with literal tilde path failed: {err}"
+        assert (fake_home / "tilde-brain" / "kairn.db").exists()
+
+        rc, out, err = _run_kairn("status", "~/tilde-brain", env=env)
+        assert rc == 0, f"status with literal tilde path failed: {err}"
+        stats = json.loads(out)
+        assert stats["nodes"] == 0
