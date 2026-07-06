@@ -537,7 +537,15 @@ class ExperienceEngine:
         for e in anchor:
             anchor_keys |= derive_entity_keys(e.content, e.tags)
 
-        min_shared = 2 if query_terms and len(query_terms) >= 2 else 1
+        # On-topic gate strength (KAIRN_DIVERSIFY_MIN_SHARED, default 2;
+        # 0 disables the gate so BM25 rank alone selects promotions).
+        # Empirical note from the diag sweeps: scoring candidates by raw
+        # shared-term count performed WORSE than plain BM25 order (verbose
+        # distractor rows out-count genuinely relevant ones; BM25's length
+        # normalization already handles this) - promotion therefore stays
+        # greedy in BM25 order and the term count is only a gate.
+        gate = int(os.environ.get("KAIRN_DIVERSIFY_MIN_SHARED", "2"))
+        min_shared = gate if query_terms and len(query_terms) >= gate else min(gate, 1)
         window_end = min(len(experiences), anchor_n + window_mult * limit)
         slots = limit - anchor_n
 
@@ -549,15 +557,16 @@ class ExperienceEngine:
             g = group(e)
             if g is None or g in seen_groups:
                 continue
-            on_topic = False
-            if query_terms:
-                content_l = e.content.lower()
-                shared = sum(1 for t in query_terms if t in content_l)
-                on_topic = shared >= min_shared
-            if not on_topic and anchor_keys & derive_entity_keys(e.content, e.tags):
-                on_topic = True
-            if not on_topic:
-                continue
+            if min_shared > 0:
+                on_topic = False
+                if query_terms:
+                    content_l = e.content.lower()
+                    shared = sum(1 for t in query_terms if t in content_l)
+                    on_topic = shared >= min_shared
+                if not on_topic and anchor_keys & derive_entity_keys(e.content, e.tags):
+                    on_topic = True
+                if not on_topic:
+                    continue
             seen_groups.add(g)
             promoted.append(e)
             promoted_ids.add(e.id)
