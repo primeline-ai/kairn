@@ -265,3 +265,20 @@ async def test_search_bitemporal_as_of_filters_future_validity(store: SQLiteStor
     froms = {e.valid_from for e in res}
     assert "2023/01/01 (Sun) 10:00" in froms
     assert "2023/03/01 (Wed) 10:00" not in froms
+
+
+async def test_search_bitemporal_as_of_is_day_granular(store: SQLiteStore):
+    """Regression repro for LongMemEval-S question gpt4_76048e76 - see
+    ExperienceEngine.search_bitemporal's docstring (criterion 1) for the
+    full day-vs-minute-granularity rationale.
+    """
+    engine = ExperienceEngine(store, EventBus())
+    await engine.save(content="took the bike to the shop", type="pattern",
+                      valid_from="2023/03/10 (Fri) 07:55")
+    await engine.save(content="took the car to the shop", type="pattern",
+                      valid_from="2023/03/11 (Sat) 07:55")
+    res = await engine.search_bitemporal(text="shop", limit=8,
+                                         as_of="2023/03/10 (Fri) 03:39")
+    froms = {e.valid_from for e in res}
+    assert "2023/03/10 (Fri) 07:55" in froms
+    assert "2023/03/11 (Sat) 07:55" not in froms

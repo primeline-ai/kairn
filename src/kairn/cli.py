@@ -71,7 +71,7 @@ def init(path: str) -> None:
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--transport", type=click.Choice(["stdio"]), default="stdio")
 def serve(path: str, transport: str) -> None:
     """Start the MCP server."""
@@ -89,7 +89,7 @@ def serve(path: str, transport: str) -> None:
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 def status(path: str) -> None:
     """Show workspace status."""
     workspace = Path(path).expanduser().resolve()
@@ -281,7 +281,7 @@ def leave(workspace_id: str) -> None:
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 def demo(path: str) -> None:
     """Interactive demo tutorial."""
     workspace = Path(path).expanduser().resolve()
@@ -463,7 +463,7 @@ def _run_json(coro_factory) -> None:
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--content", required=True, help="Knowledge content to learn")
 @click.option(
     "--type",
@@ -519,7 +519,7 @@ def learn(
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--topic", default=None, help="Topic to recall knowledge about")
 @click.option("--limit", default=10, type=click.IntRange(1, 50), help="Max results")
 @click.option(
@@ -548,7 +548,7 @@ def recall(path: str, topic: str | None, limit: int, min_relevance: float) -> No
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--keywords", required=True, help="Keywords to find relevant context")
 @click.option(
     "--detail",
@@ -581,7 +581,7 @@ def context(path: str, keywords: str, detail: str, limit: int) -> None:
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--text", default=None, help="Full-text search query")
 @click.option("--type", "type_", default=None, help="Filter by experience type")
 @click.option(
@@ -636,7 +636,7 @@ def memories(
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--problem", required=True, help="Problem description to find solutions for")
 @click.option("--limit", default=10, type=click.IntRange(1, 50), help="Max results")
 def crossref(path: str, problem: str, limit: int) -> None:
@@ -660,7 +660,7 @@ def crossref(path: str, problem: str, limit: int) -> None:
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--text", default=None, help="Full-text search query")
 @click.option("--namespace", default=None, help="Filter by namespace")
 @click.option("--node-type", default=None, help="Filter by node type")
@@ -738,7 +738,7 @@ def query(
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--name", required=True, help="Node name")
 @click.option("--type", "type_", required=True, help="Node type (concept, pattern, etc.)")
 @click.option("--namespace", default="knowledge", help="Namespace")
@@ -781,7 +781,7 @@ def add(
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--source-id", required=True, help="Source node ID")
 @click.option("--target-id", required=True, help="Target node ID")
 @click.option("--edge-type", required=True, help="Relationship type")
@@ -820,7 +820,7 @@ def connect(
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--source-id", required=True, help="Source node ID")
 @click.option("--target-id", required=True, help="Target node ID")
 @click.option(
@@ -888,7 +888,7 @@ def judge(
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option(
     "--check",
     default=None,
@@ -936,7 +936,7 @@ def doctor(path: str, check: str | None, as_json: bool) -> None:
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--node-id", default=None, help="Node ID to soft-delete")
 @click.option("--source-id", default=None, help="Edge source ID")
 @click.option("--target-id", default=None, help="Edge target ID")
@@ -986,7 +986,7 @@ def remove(
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option(
     "--threshold",
     default=0.01,
@@ -1013,7 +1013,7 @@ def prune(path: str, threshold: float) -> None:
 
 
 @main.command(name="promote-pending")
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option(
     "--limit",
     default=100,
@@ -1043,7 +1043,7 @@ def promote_pending(path: str, limit: int) -> None:
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--name", required=True, help="Project name")
 @click.option("--project-id", default=None, help="Project ID (omit to create new)")
 @click.option("--phase", default=None, help="planning|active|paused|done")
@@ -1108,7 +1108,7 @@ def project(
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--active-only", is_flag=True, help="Only show active projects")
 @click.option("--set-active", default=None, help="Project ID to set as active")
 def projects(path: str, active_only: bool, set_active: str | None) -> None:
@@ -1141,7 +1141,7 @@ def projects(path: str, active_only: bool, set_active: str | None) -> None:
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--project-id", required=True, help="Project ID")
 @click.option("--action", required=True, help="What was done (or what failed)")
 @click.option(
@@ -1196,7 +1196,7 @@ def log(
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--title", required=True, help="Idea title")
 @click.option("--idea-id", default=None, help="Idea ID (omit to create new)")
 @click.option("--category", default=None, help="Category classification")
@@ -1262,7 +1262,7 @@ def idea(
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--status", default=None, help="Filter by status")
 @click.option("--category", default=None, help="Filter by category")
 @click.option("--limit", default=10, type=click.IntRange(1, 50), help="Max results")
@@ -1304,7 +1304,7 @@ def ideas(
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--node-id", required=True, help="Starting node ID")
 @click.option("--depth", default=1, type=click.IntRange(1, 5), help="Traversal depth")
 @click.option("--edge-type", default=None, help="Filter by edge type")
@@ -1333,7 +1333,7 @@ def related(
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 @click.option("--nodes", default=1000, help="Number of nodes to create")
 def benchmark(path: str, nodes: int) -> None:
     """Run performance benchmarks."""
@@ -1412,7 +1412,7 @@ def benchmark(path: str, nodes: int) -> None:
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path())
 def token_audit(path: str) -> None:
     """Count tokens in tool definitions."""
     workspace = Path(path).expanduser().resolve()

@@ -311,11 +311,22 @@ class ExperienceEngine:
         contract):
 
         1. **as-of validity** (temporal-reasoning): if `as_of` is given, drop
-           experiences whose `valid_from` is strictly AFTER `as_of` (facts not
-           yet true at the query time). NULL-`valid_from` experiences are always
-           eligible. `valid_to` is NOT consulted here - validity-END is a
-           separate concern and never affects recall ordering, preserving the
-           decay/validity orthogonality.
+           experiences whose `valid_from` falls on a calendar day strictly
+           AFTER `as_of`'s day (facts not yet true at the query time). The
+           comparison is DAY-granular, not minute-granular: a fact valid later
+           the same day as `as_of` is still eligible (LongMemEval-S dates carry
+           clock time down to the minute, and 43/500 questions have a gold
+           answer session dated the same day as the question but at a later
+           clock time - a minute-granular compare silently dropped those).
+           NULL-`valid_from` experiences are always eligible. `valid_to` is NOT
+           consulted here - validity-END is a separate concern and never
+           affects recall ordering, preserving the decay/validity orthogonality.
+           CAVEAT: the day-prefix compare is a raw string slice, so `valid_from`
+           and `as_of` must share one date-separator convention within a
+           workspace ("YYYY/MM/DD ..." or ISO "YYYY-MM-DD..."); mixing the two
+           breaks chronological ordering silently (pre-existing limitation of
+           this string-based comparison, not introduced by day-granularity -
+           the prior minute-granular compare had the identical assumption).
         2. **session/entity diversification** (multi-session): re-rank so the
            head of the result spreads across distinct subjects/sessions. The
            diversity key is `entity_key` when present, else `valid_from` (the
@@ -341,12 +352,18 @@ class ExperienceEngine:
             text=fts_text, exp_type=exp_type, limit=100000, offset=0
         )
 
+        as_of_day = as_of[:10] if as_of is not None else None
         now = datetime.now(UTC)
         scored: list[tuple[Experience, float]] = []
         for data in results:
             exp = Experience(**data)
-            # as-of validity filter (valid-time, NOT valid_to / decay).
-            if as_of is not None and exp.valid_from is not None and exp.valid_from > as_of:
+            # as-of validity filter (valid-time, NOT valid_to / decay) - see
+            # criterion 1 above for the day-granularity rationale.
+            if (
+                as_of_day is not None
+                and exp.valid_from is not None
+                and exp.valid_from[:10] > as_of_day
+            ):
                 continue
             current_relevance = exp.relevance(at=now)
             if current_relevance >= min_relevance:
