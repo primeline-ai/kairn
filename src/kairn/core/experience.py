@@ -8,6 +8,7 @@ to the knowledge graph.
 import logging
 import math
 import os
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -85,6 +86,30 @@ def relevance_bucket(value: float) -> int:
         Bucket index (higher = more relevant)
     """
     return round(value / RELEVANCE_BUCKET_SIZE)
+
+
+# Leading calendar-day pattern shared by both date conventions seen in real
+# data: ISO ("2023-05-20T03:39:00", "2023-05-20 ...") and the slash form
+# LongMemEval and conversational ingest use ("2023/05/20 (Sat) 02:21").
+_DATE_PREFIX_RE = re.compile(r"^\s*(\d{4})[-/](\d{2})[-/](\d{2})")
+
+
+def normalize_date_prefix(value: str | None) -> str | None:
+    """Extract a canonical ISO day prefix (YYYY-MM-DD) from a date-bearing string.
+
+    Both separator conventions normalize to the same comparable form, so
+    valid-time comparisons work across mixed conventions within one workspace
+    (previously a documented silent-breakage caveat of raw string slicing).
+    Returns None when the string does not start with a recognizable calendar
+    day - callers treat that as "no validity signal" (always eligible),
+    never as an error.
+    """
+    if value is None:
+        return None
+    m = _DATE_PREFIX_RE.match(value)
+    if m is None:
+        return None
+    return "-".join(m.groups())
 
 
 def derive_entity_key(content: str, tags: list[str] | None) -> str | None:
@@ -321,12 +346,11 @@ class ExperienceEngine:
            NULL-`valid_from` experiences are always eligible. `valid_to` is NOT
            consulted here - validity-END is a separate concern and never
            affects recall ordering, preserving the decay/validity orthogonality.
-           CAVEAT: the day-prefix compare is a raw string slice, so `valid_from`
-           and `as_of` must share one date-separator convention within a
-           workspace ("YYYY/MM/DD ..." or ISO "YYYY-MM-DD..."); mixing the two
-           breaks chronological ordering silently (pre-existing limitation of
-           this string-based comparison, not introduced by day-granularity -
-           the prior minute-granular compare had the identical assumption).
+           Day prefixes are canonicalized via `normalize_date_prefix`, so the
+           two date conventions seen in real data ("YYYY/MM/DD ..." and ISO
+           "YYYY-MM-DD...") compare correctly even when mixed within one
+           workspace; a `valid_from` with no recognizable leading calendar day
+           carries no validity signal and stays always-eligible.
         2. **session/entity diversification** (multi-session): re-rank so the
            head of the result spreads across distinct subjects/sessions. The
            diversity key is `entity_key` when present, else `valid_from` (the
@@ -352,19 +376,17 @@ class ExperienceEngine:
             text=fts_text, exp_type=exp_type, limit=100000, offset=0
         )
 
-        as_of_day = as_of[:10] if as_of is not None else None
+        as_of_day = normalize_date_prefix(as_of)
         now = datetime.now(UTC)
         scored: list[tuple[Experience, float]] = []
         for data in results:
             exp = Experience(**data)
             # as-of validity filter (valid-time, NOT valid_to / decay) - see
             # criterion 1 above for the day-granularity rationale.
-            if (
-                as_of_day is not None
-                and exp.valid_from is not None
-                and exp.valid_from[:10] > as_of_day
-            ):
-                continue
+            if as_of_day is not None:
+                vf_day = normalize_date_prefix(exp.valid_from)
+                if vf_day is not None and vf_day > as_of_day:
+                    continue
             current_relevance = exp.relevance(at=now)
             if current_relevance >= min_relevance:
                 scored.append((exp, current_relevance))

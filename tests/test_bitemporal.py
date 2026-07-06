@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from kairn.core.experience import ExperienceEngine
+from kairn.core.experience import ExperienceEngine, normalize_date_prefix
 from kairn.events.bus import EventBus
 from kairn.models.experience import Experience
 from kairn.storage.sqlite_store import SQLiteStore
@@ -282,3 +282,54 @@ async def test_search_bitemporal_as_of_is_day_granular(store: SQLiteStore):
     froms = {e.valid_from for e in res}
     assert "2023/03/10 (Fri) 07:55" in froms
     assert "2023/03/11 (Sat) 07:55" not in froms
+
+
+def test_normalize_date_prefix_conventions():
+    """Both real-world date conventions canonicalize to the same ISO day;
+    non-date strings carry no validity signal (None), never an error."""
+    assert normalize_date_prefix("2023/05/20 (Sat) 02:21") == "2023-05-20"
+    assert normalize_date_prefix("2023-05-20T03:39:00+00:00") == "2023-05-20"
+    assert normalize_date_prefix("2023-05-20 03:39") == "2023-05-20"
+    assert normalize_date_prefix("  2023/05/20") == "2023-05-20"
+    assert normalize_date_prefix("unknown date") is None
+    assert normalize_date_prefix("") is None
+    assert normalize_date_prefix(None) is None
+
+
+async def test_search_bitemporal_as_of_mixed_date_conventions(store: SQLiteStore):
+    """as-of filtering is correct when valid_from and as_of use DIFFERENT
+    date-separator conventions (previously a documented silent-breakage
+    caveat of the raw string-slice compare)."""
+    engine = ExperienceEngine(store, EventBus())
+    # Slash-form valid_from, ISO as_of
+    await engine.save(content="price was ten dollars", type="pattern",
+                      valid_from="2023/01/01 (Sun) 10:00")
+    await engine.save(content="price became twenty dollars", type="pattern",
+                      valid_from="2023/03/01 (Wed) 10:00")
+    res = await engine.search_bitemporal(text="price dollars", limit=8,
+                                         as_of="2023-02-01T00:00:00")
+    froms = {e.valid_from for e in res}
+    assert "2023/01/01 (Sun) 10:00" in froms
+    assert "2023/03/01 (Wed) 10:00" not in froms
+
+    # ISO valid_from, slash-form as_of
+    await engine.save(content="office moved to Berlin", type="pattern",
+                      valid_from="2023-01-01T10:00:00")
+    await engine.save(content="office moved to Hamburg", type="pattern",
+                      valid_from="2023-03-01T10:00:00")
+    res = await engine.search_bitemporal(text="office moved", limit=8,
+                                         as_of="2023/02/01 (Wed) 00:00")
+    froms = {e.valid_from for e in res}
+    assert "2023-01-01T10:00:00" in froms
+    assert "2023-03-01T10:00:00" not in froms
+
+
+async def test_search_bitemporal_unparseable_valid_from_stays_eligible(store: SQLiteStore):
+    """A valid_from with no recognizable calendar day carries no validity
+    signal: the experience must never be silently dropped by the as-of filter."""
+    engine = ExperienceEngine(store, EventBus())
+    await engine.save(content="ordered a standing desk", type="pattern",
+                      valid_from="unknown date")
+    res = await engine.search_bitemporal(text="standing desk", limit=8,
+                                         as_of="2023/02/01 (Wed) 00:00")
+    assert any(e.valid_from == "unknown date" for e in res)
