@@ -134,6 +134,74 @@ def derive_entity_key(content: str, tags: list[str] | None) -> str | None:
     return key or None
 
 
+# Tokens that appear capitalized in conversational ingest but never denote a
+# subject entity: the "[conversation on DATE (Sat) ...] User: ... Assistant:"
+# framing that both real transcript imports and the benchmark harness produce.
+_ENTITY_TOKEN_BLOCKLIST = {
+    "user", "assistant", "conversation",
+    "mon", "tue", "wed", "thu", "fri", "sat", "sun",
+}
+
+# A proper-noun run: a capitalized word (or ALL-CAPS / mixed-case product
+# token), optionally continued by further capitalized words or number-bearing
+# tokens joined by single spaces - "Dell XPS 13", "Adobe Premiere Pro", "GPT-4".
+_ENTITY_RUN_RE = re.compile(
+    r"(?<![\w'-])([A-Z][\w'-]*(?:[ ](?:[A-Z][\w'-]*|\d[\w-]*))*)"
+)
+
+
+def _is_sentence_lead(content: str, start: int) -> bool:
+    """True when the token at `start` opens a sentence (or the whole string),
+    where capitalization carries no proper-noun signal."""
+    i = start - 1
+    while i >= 0 and content[i] in " \t\"'([{*":
+        i -= 1
+    return i < 0 or content[i] in ".!?\n:;]"
+
+
+def derive_entity_keys(
+    content: str, tags: list[str] | None, *, max_keys: int = 16
+) -> set[str]:
+    """Derive the full rule-based entity-key SET for an experience.
+
+    The multi-key, content-derived companion to `derive_entity_key` (which
+    stays the single stored key for schema stability). Zero LLM, zero
+    embeddings, deterministic: normalized tags plus proper-noun runs extracted
+    from content ("Dell XPS 13" yields the run itself and its word components,
+    so a later mention of just "XPS" still overlaps). Computed at query time
+    by the density-preserving diversification pass - nothing is stored, so
+    existing rows benefit without migration or backfill.
+
+    Single capitalized words at a sentence start are skipped (capitalization
+    carries no proper-noun signal there); multi-word runs are kept wherever
+    they appear. Capped at `max_keys` in first-occurrence order.
+    """
+    keys: set[str] = set()
+
+    def _add(raw: str) -> None:
+        k = raw.strip().lower()
+        if k and len(keys) < max_keys and k not in _ENTITY_TOKEN_BLOCKLIST:
+            keys.add(k)
+
+    for t in tags or []:
+        _add(t)
+
+    for m in _ENTITY_RUN_RE.finditer(content):
+        run = m.group(1)
+        words = run.split(" ")
+        if len(words) == 1:
+            w = words[0]
+            if len(w) < 3 or _is_sentence_lead(content, m.start(1)):
+                continue
+            _add(w)
+        else:
+            _add(run)
+            for w in words:
+                if len(w) >= 3 and not w[0].isdigit():
+                    _add(w)
+    return keys
+
+
 class ExperienceEngine:
     """Engine for managing experiences with decay and promotion."""
 
@@ -399,12 +467,103 @@ class ExperienceEngine:
         ordered = [exp for exp, _ in scored]
         # Session/entity diversification is an operator-toggleable kill-switch
         # (default ON). Set KAIRN_BITEMPORAL_DIVERSIFY=0 to use as-of validity
-        # filtering alone without diversification. Diversification raises
-        # answer-session coverage but can dilute answer-content density (a
-        # benchmarked regression, Kairn daf5cd8e) - the switch isolates the two.
+        # filtering alone without diversification. The default algorithm is the
+        # density-preserving pass (anchored, on-topic-gated); the prior
+        # unconditional first-hit-per-key pass (which diluted answer-content
+        # density - the benchmarked regression, Kairn daf5cd8e) remains
+        # selectable via KAIRN_DIVERSIFY_MODE=legacy for A/B measurement.
         if os.environ.get("KAIRN_BITEMPORAL_DIVERSIFY", "1") != "0":
-            ordered = self._diversify_by_session(ordered)
+            if os.environ.get("KAIRN_DIVERSIFY_MODE", "density") == "legacy":
+                ordered = self._diversify_by_session(ordered)
+            else:
+                terms = (
+                    set(re.findall(r'"([^"]+)"', fts_text)) if fts_text else None
+                )
+                ordered = self._diversify_density_preserving(
+                    ordered, limit=limit, query_terms=terms
+                )
         return ordered[:limit]
+
+    @staticmethod
+    def _diversify_density_preserving(
+        experiences: list[Experience],
+        *,
+        limit: int,
+        query_terms: set[str] | None,
+    ) -> list[Experience]:
+        """Density-preserving session/entity diversification.
+
+        Replaces the unconditional first-hit-per-key promotion (which collapsed
+        answer-content density in the head - the benchmarked 0.31 regression,
+        Kairn `daf5cd8e`: "right sessions, wrong content") with a bounded,
+        on-topic coverage pass:
+
+        1. ANCHOR - the top-A BM25 hits stay untouched, preserving the
+           corroborating-rows density multi-excerpt answers need.
+        2. COVERAGE - walk the next W*limit candidates in BM25 order and
+           promote the best hit of each not-yet-represented session/entity
+           group into the head, but only when the hit is plausibly on-topic:
+           it shares >=2 query terms with the question (>=1 for single-term
+           queries), OR >=1 derived entity key (`derive_entity_keys`) with the
+           anchor set - the latter catches the aggregation case where the
+           question names a category ("laptops") while sessions name instances
+           ("Dell XPS 13").
+        3. FILL - everything else follows in original BM25 order.
+
+        Group identity matches the legacy pass (stored entity_key, else the
+        full valid_from string = session identity); items with neither are
+        never promoted or merged. Returns the input unchanged when it already
+        fits within `limit` (fallback identity).
+
+        Benchmark-tuning knobs (read per call so harness sweeps work without
+        code edits): KAIRN_DIVERSIFY_ANCHOR (default 4, adaptively capped at
+        limit//2) and KAIRN_DIVERSIFY_WINDOW (default 3, in multiples of
+        `limit`).
+        """
+        if len(experiences) <= limit:
+            return experiences
+
+        anchor_n = max(
+            1, min(int(os.environ.get("KAIRN_DIVERSIFY_ANCHOR", "4")), limit // 2)
+        )
+        window_mult = int(os.environ.get("KAIRN_DIVERSIFY_WINDOW", "3"))
+
+        def group(e: Experience) -> str | None:
+            return e.entity_key or e.valid_from
+
+        anchor = experiences[:anchor_n]
+        seen_groups = {g for e in anchor if (g := group(e)) is not None}
+        anchor_keys: set[str] = set()
+        for e in anchor:
+            anchor_keys |= derive_entity_keys(e.content, e.tags)
+
+        min_shared = 2 if query_terms and len(query_terms) >= 2 else 1
+        window_end = min(len(experiences), anchor_n + window_mult * limit)
+        slots = limit - anchor_n
+
+        promoted: list[Experience] = []
+        promoted_ids: set[str] = set()
+        for e in experiences[anchor_n:window_end]:
+            if len(promoted) >= slots:
+                break
+            g = group(e)
+            if g is None or g in seen_groups:
+                continue
+            on_topic = False
+            if query_terms:
+                content_l = e.content.lower()
+                shared = sum(1 for t in query_terms if t in content_l)
+                on_topic = shared >= min_shared
+            if not on_topic and anchor_keys & derive_entity_keys(e.content, e.tags):
+                on_topic = True
+            if not on_topic:
+                continue
+            seen_groups.add(g)
+            promoted.append(e)
+            promoted_ids.add(e.id)
+
+        rest = [e for e in experiences[anchor_n:] if e.id not in promoted_ids]
+        return anchor + promoted + rest
 
     @staticmethod
     def _diversify_by_session(experiences: list[Experience]) -> list[Experience]:

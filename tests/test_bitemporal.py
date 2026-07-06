@@ -16,7 +16,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from kairn.core.experience import ExperienceEngine, normalize_date_prefix
+from kairn.core.experience import (
+    ExperienceEngine,
+    derive_entity_keys,
+    normalize_date_prefix,
+)
 from kairn.events.bus import EventBus
 from kairn.models.experience import Experience
 from kairn.storage.sqlite_store import SQLiteStore
@@ -333,3 +337,107 @@ async def test_search_bitemporal_unparseable_valid_from_stays_eligible(store: SQ
     res = await engine.search_bitemporal(text="standing desk", limit=8,
                                          as_of="2023/02/01 (Wed) 00:00")
     assert any(e.valid_from == "unknown date" for e in res)
+
+
+# ---------------------------------------------------------------------------
+# Multi-key entity extraction + density-preserving diversification
+# ---------------------------------------------------------------------------
+
+def test_derive_entity_keys_tags_and_proper_nouns():
+    keys = derive_entity_keys(
+        "[conversation on 2023/05/20 (Sat) 02:21] User: I compared the Dell XPS 13 "
+        "with the MacBook Air at the store",
+        ["laptop-research"],
+    )
+    assert "laptop-research" in keys       # tags always contribute
+    assert "dell xps 13" in keys           # full proper-noun run
+    assert "macbook air" in keys
+    assert "dell" in keys and "xps" in keys  # run components for partial mention overlap
+    # conversational framing tokens never become keys
+    assert "user" not in keys
+    assert "sat" not in keys
+    assert "conversation" not in keys
+
+
+def test_derive_entity_keys_sentence_lead_single_word_skipped():
+    keys = derive_entity_keys("Yesterday it rained. Later we saw the Rhine.", None)
+    assert "yesterday" not in keys  # sentence-lead capitalization, no signal
+    assert "later" not in keys
+    assert "rhine" in keys          # mid-sentence capitalization is the signal
+
+
+def test_derive_entity_keys_deterministic_and_capped():
+    content = "We visited " + ", ".join(f"Zone{i}" for i in range(40)) + " today."
+    a = derive_entity_keys(content, None)
+    b = derive_entity_keys(content, None)
+    assert a == b
+    assert len(a) <= 16
+
+
+async def test_density_preserving_promotes_on_topic_blocks_off_topic(store: SQLiteStore):
+    """The coverage pass promotes an unseen session only when on-topic
+    (>=2 shared query terms or anchor-entity overlap); a weakly-matching
+    off-topic session is NOT promoted - the density anchor stays intact."""
+    engine = ExperienceEngine(store, EventBus())
+    # Session A: 8 strongly-matching rows (the density source)
+    for i in range(8):
+        await engine.save(content=f"trip to Paris planning detail {i} museum tickets",
+                          type="pattern", valid_from="2023/01/01 (Sun) 10:00")
+    # Session B: one on-topic row from a different session (shares both terms)
+    await engine.save(content="booked the Paris museum pass", type="pattern",
+                      valid_from="2023/01/02 (Mon) 10:00")
+    # Session C: one weakly-matching row (1 shared term, no anchor-entity overlap)
+    await engine.save(content="museum hours in Tokyo", type="pattern",
+                      valid_from="2023/01/03 (Tue) 10:00")
+
+    res = await engine.search_bitemporal(text="Paris museum", limit=8)
+    sessions = [e.valid_from for e in res]
+    assert "2023/01/02 (Mon) 10:00" in sessions            # on-topic promoted
+    assert "2023/01/03 (Tue) 10:00" not in sessions        # off-topic blocked
+    assert sessions.count("2023/01/01 (Sun) 10:00") >= 6   # density preserved
+
+
+async def test_density_preserving_anchor_entity_overlap_promotes_instance_mention(
+    store: SQLiteStore,
+):
+    """The aggregation case: the question uses category words, a second
+    session shares only ONE of them (below the 2-term gate) but names the
+    same entity as the anchors - anchor-entity overlap promotes it.
+
+    Note the boundary this encodes: FTS recall precedes diversification, so
+    a row sharing ZERO query terms is never recalled and cannot be rescued
+    by entity overlap - the overlap gate widens promotion within the
+    recalled set, it does not widen recall itself."""
+    engine = ExperienceEngine(store, EventBus())
+    for i in range(8):
+        await engine.save(
+            content=f"laptop shopping notes {i} comparing the Dell XPS 13 build",
+            type="pattern", valid_from="2023/02/01 (Wed) 10:00")
+    # Different session: shares only "laptop" (1 of 2 query terms) but
+    # mentions the anchor entity.
+    await engine.save(content="unpacked the new laptop, the Dell XPS 13 arrived",
+                      type="pattern", valid_from="2023/02/05 (Sun) 10:00")
+
+    res = await engine.search_bitemporal(text="laptop shopping", limit=8)
+    assert "2023/02/05 (Sun) 10:00" in {e.valid_from for e in res}
+
+
+async def test_diversify_mode_legacy_env_selects_old_pass(
+    store: SQLiteStore, monkeypatch: pytest.MonkeyPatch,
+):
+    """KAIRN_DIVERSIFY_MODE=legacy restores the unconditional
+    first-hit-per-key promotion (for A/B measurement)."""
+    engine = ExperienceEngine(store, EventBus())
+    for i in range(4):
+        await engine.save(content=f"garden fence repair step {i}", type="pattern",
+                          valid_from="2023/03/01 (Wed) 10:00")
+    # Weak single-term match in another session: legacy promotes it, density does not.
+    await engine.save(content="painted the garden shed", type="pattern",
+                      valid_from="2023/03/02 (Thu) 10:00")
+
+    res_density = await engine.search_bitemporal(text="garden fence repair", limit=2)
+    assert {e.valid_from for e in res_density} == {"2023/03/01 (Wed) 10:00"}
+
+    monkeypatch.setenv("KAIRN_DIVERSIFY_MODE", "legacy")
+    res_legacy = await engine.search_bitemporal(text="garden fence repair", limit=2)
+    assert "2023/03/02 (Thu) 10:00" in {e.valid_from for e in res_legacy}
