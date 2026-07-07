@@ -63,7 +63,7 @@ def create_server(db_path: str) -> FastMCP:
                 if store is not None:
                     await store.close()
 
-    mcp = FastMCP("kairn", version="0.2.0", lifespan=_lifespan)
+    mcp = FastMCP("kairn", version="0.2.1", lifespan=_lifespan)
 
     async def _init() -> dict[str, Any]:
         async with _lock:

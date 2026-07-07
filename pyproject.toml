@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kairn-ai"
-version = "0.2.0"
+version = "0.2.1"
 description = "Context-aware knowledge engine for AI — memory, graph, intelligent routing"
 readme = "README.md"
 license = "MIT"
@@ -47,6 +47,8 @@ kairn = "kairn.cli:main"
 Homepage = "https://github.com/primeline-ai/kairn"
 Documentation = "https://github.com/primeline-ai/kairn#readme"
 Repository = "https://github.com/primeline-ai/kairn"
+Issues = "https://github.com/primeline-ai/kairn/issues"
+Changelog = "https://github.com/primeline-ai/kairn/releases"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kairn"]
