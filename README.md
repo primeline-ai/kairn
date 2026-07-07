@@ -5,7 +5,7 @@
 
 > Context-aware knowledge engine for AI assistants.
 
-**Status: Alpha (v0.1.0).** The API and CLI are functional and tested (see
+**Status: Alpha (v0.2.0).** The API and CLI are functional and tested (see
 [Development](#development)), but interfaces may still change between
 releases. Feedback and issues welcome.
 
