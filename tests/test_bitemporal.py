@@ -422,6 +422,106 @@ async def test_density_preserving_anchor_entity_overlap_promotes_instance_mentio
     assert "2023/02/05 (Sun) 10:00" in {e.valid_from for e in res}
 
 
+def test_derive_entity_keys_mixed_case_product_tokens():
+    """iPhone/eBay-style tokens (internal capital, lowercase lead) are entity
+    keys - their capitalization is intrinsic, so even at a sentence start."""
+    keys = derive_entity_keys("iPhone prices dropped. I sold mine on eBay.", None)
+    assert "iphone" in keys
+    assert "ebay" in keys
+
+
+def test_derive_entity_keys_never_leaks_articles_from_runs():
+    """'The Rhine' at a sentence start yields 'rhine', never 'the' - leading
+    stop-words are stripped from runs instead of becoming key components."""
+    keys = derive_entity_keys("The Rhine is beautiful. We also saw the Alps.", None)
+    assert "rhine" in keys
+    assert "alps" in keys
+    assert "the" not in keys
+
+
+def test_derive_entity_keys_skips_dialogue_labels():
+    """Any capitalized run directly followed by ':' is a dialogue-turn label
+    (User:, Human:, Q:), structural framing rather than a subject."""
+    keys = derive_entity_keys("Human: tell me about the Louvre please", None)
+    assert "human" not in keys
+    assert "louvre" in keys
+
+
+async def test_diversify_env_knobs_malformed_values_degrade_to_defaults(
+    store: SQLiteStore, monkeypatch: pytest.MonkeyPatch,
+):
+    """A stray non-numeric knob value from a benchmark sweep must never crash
+    recall - it degrades to the documented default."""
+    engine = ExperienceEngine(store, EventBus())
+    for i in range(8):
+        await engine.save(content=f"trip to Paris planning detail {i} museum tickets",
+                          type="pattern", valid_from="2023/01/01 (Sun) 10:00")
+    await engine.save(content="booked the Paris museum pass", type="pattern",
+                      valid_from="2023/01/02 (Mon) 10:00")
+
+    baseline = await engine.search_bitemporal(text="Paris museum", limit=8)
+    monkeypatch.setenv("KAIRN_DIVERSIFY_ANCHOR", "not-an-int")
+    monkeypatch.setenv("KAIRN_DIVERSIFY_WINDOW", "4.0")
+    monkeypatch.setenv("KAIRN_DIVERSIFY_MIN_SHARED", "")
+    degraded = await engine.search_bitemporal(text="Paris museum", limit=8)
+    assert [e.id for e in degraded] == [e.id for e in baseline]
+
+
+async def test_diversify_gate_clamps_to_available_query_terms(
+    store: SQLiteStore, monkeypatch: pytest.MonkeyPatch,
+):
+    """An operator-raised gate stays strict: with MIN_SHARED=3 and a 2-term
+    query the effective gate is 2 (all available terms), never collapsing
+    to 1 - a 1-term candidate stays blocked."""
+    engine = ExperienceEngine(store, EventBus())
+    for i in range(8):
+        await engine.save(content=f"trip to Paris planning detail {i} museum tickets",
+                          type="pattern", valid_from="2023/01/01 (Sun) 10:00")
+    # Shares only "museum" (1 of 2 terms), no anchor-entity overlap
+    await engine.save(content="museum hours in Tokyo", type="pattern",
+                      valid_from="2023/01/03 (Tue) 10:00")
+
+    monkeypatch.setenv("KAIRN_DIVERSIFY_MIN_SHARED", "3")
+    res = await engine.search_bitemporal(text="Paris museum", limit=8)
+    assert "2023/01/03 (Tue) 10:00" not in {e.valid_from for e in res}
+
+
+async def test_diversify_on_topic_uses_token_match_not_substring(
+    store: SQLiteStore,
+):
+    """'art' must not count as shared inside 'started'/'party' - the on-topic
+    gate compares token sets, not substrings."""
+    engine = ExperienceEngine(store, EventBus())
+    for i in range(8):
+        await engine.save(content=f"art gallery visit notes {i} exhibition wing",
+                          type="pattern", valid_from="2023/04/01 (Sat) 10:00")
+    # Contains "gallery" as a token but "art" only inside other words:
+    # 1 real shared token, below the 2-term gate; no entity overlap.
+    await engine.save(content="started the party gallery playlist", type="pattern",
+                      valid_from="2023/04/02 (Sun) 10:00")
+
+    res = await engine.search_bitemporal(text="art gallery", limit=8)
+    assert "2023/04/02 (Sun) 10:00" not in {e.valid_from for e in res}
+
+
+async def test_density_diversify_identity_when_all_fit_within_limit(
+    store: SQLiteStore,
+):
+    """When every candidate fits within `limit`, nothing is truncated and the
+    density pass deliberately returns raw BM25 order (diversification exists
+    to fix truncation loss). Documented intended behavior, not an accident."""
+    engine = ExperienceEngine(store, EventBus())
+    for i in range(3):
+        await engine.save(content=f"cabin renovation log {i}", type="pattern",
+                          valid_from="2023/05/01 (Mon) 10:00")
+    await engine.save(content="cabin renovation final walkthrough", type="pattern",
+                      valid_from="2023/05/02 (Tue) 10:00")
+
+    base = await engine.search(text="cabin renovation", limit=8)
+    bit = await engine.search_bitemporal(text="cabin renovation", limit=8)
+    assert [e.id for e in bit] == [e.id for e in base]
+
+
 async def test_diversify_mode_legacy_env_selects_old_pass(
     store: SQLiteStore, monkeypatch: pytest.MonkeyPatch,
 ):

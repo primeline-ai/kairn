@@ -91,16 +91,28 @@ _STOP_WORDS = {
 _FTS_RESERVED = {"and", "or", "not", "near"}
 
 
+def fts_keywords(text: str) -> list[str]:
+    """Tokenize natural language into the searchable keyword list.
+
+    The single shared tokenizer behind `to_fts_query`: lowercased word
+    tokens minus stop-words, FTS-reserved words, and short tokens. Exposed
+    so callers that need the raw keyword set (e.g. the diversification
+    pass's on-topic gate) share the exact same filtering instead of
+    re-deriving it from the quoted query string.
+    """
+    words = re.findall(r"[a-zA-Z0-9_]+", text.lower())
+    return [
+        w for w in words if w not in _STOP_WORDS and w not in _FTS_RESERVED and len(w) > 2
+    ]
+
+
 def to_fts_query(text: str) -> str | None:
     """Convert natural language to a safe FTS5 OR query.
 
     Returns a quoted OR-joined keyword string (always valid FTS5), or None
     when no searchable keyword survives stop-word/length filtering.
     """
-    words = re.findall(r"[a-zA-Z0-9_]+", text.lower())
-    keywords = [
-        w for w in words if w not in _STOP_WORDS and w not in _FTS_RESERVED and len(w) > 2
-    ]
+    keywords = fts_keywords(text)
     if not keywords:
         return None
     return " OR ".join(f'"{w}"' for w in keywords)

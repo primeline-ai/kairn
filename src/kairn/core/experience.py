@@ -12,7 +12,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from kairn.core.fts import to_fts_query
+from kairn.core.fts import _STOP_WORDS, fts_keywords, to_fts_query
 from kairn.events.bus import EventBus
 from kairn.events.types import EventType
 from kairn.models.experience import VALID_CONFIDENCES, VALID_TYPES, Experience
@@ -137,26 +137,50 @@ def derive_entity_key(content: str, tags: list[str] | None) -> str | None:
 # Tokens that appear capitalized in conversational ingest but never denote a
 # subject entity: the "[conversation on DATE (Sat) ...] User: ... Assistant:"
 # framing that both real transcript imports and the benchmark harness produce.
+# Deliberately separate from fts._STOP_WORDS (which IS also applied): these
+# are proper-noun-shaped framing tokens, not common words.
 _ENTITY_TOKEN_BLOCKLIST = {
     "user", "assistant", "conversation",
     "mon", "tue", "wed", "thu", "fri", "sat", "sun",
 }
 
-# A proper-noun run: a capitalized word (or ALL-CAPS / mixed-case product
-# token), optionally continued by further capitalized words or number-bearing
-# tokens joined by single spaces - "Dell XPS 13", "Adobe Premiere Pro", "GPT-4".
+# An entity token: a capitalized word, or a mixed-case product token whose
+# capital is internal ("iPhone", "eBay", "macOS") - the lowercase lead means
+# the capitalization is intrinsic, never sentence-induced.
+_ENTITY_TOKEN = r"(?:[A-Z][\w'-]*|[a-z]{1,3}[A-Z][\w'-]*)"
+
+# A proper-noun run: an entity token optionally continued by further entity
+# tokens or number-bearing tokens joined by single spaces - "Dell XPS 13",
+# "Adobe Premiere Pro", "GPT-4 Turbo".
 _ENTITY_RUN_RE = re.compile(
-    r"(?<![\w'-])([A-Z][\w'-]*(?:[ ](?:[A-Z][\w'-]*|\d[\w-]*))*)"
+    rf"(?<![\w'-])({_ENTITY_TOKEN}(?:[ ](?:{_ENTITY_TOKEN}|\d[\w-]*))*)"
 )
 
 
 def _is_sentence_lead(content: str, start: int) -> bool:
     """True when the token at `start` opens a sentence (or the whole string),
-    where capitalization carries no proper-noun signal."""
+    where capitalization carries no proper-noun signal. Skippable leading
+    punctuation and sentence terminators include the common Unicode
+    typographic forms (curly quotes, em/en dashes) seen in real transcripts."""
     i = start - 1
-    while i >= 0 and content[i] in " \t\"'([{*":
+    while i >= 0 and content[i] in " \t\"'([{*“”‘’„":
         i -= 1
-    return i < 0 or content[i] in ".!?\n:;]"
+    return i < 0 or content[i] in ".!?\n:;]—–…"
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an integer tuning knob from the environment, falling back to the
+    default on missing OR malformed values - a stray non-numeric override
+    left over from a benchmark sweep must degrade to defaults, never crash
+    the recall path."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Ignoring malformed %s=%r; using default %d", name, raw, default)
+        return default
 
 
 def derive_entity_keys(
@@ -168,19 +192,30 @@ def derive_entity_keys(
     stays the single stored key for schema stability). Zero LLM, zero
     embeddings, deterministic: normalized tags plus proper-noun runs extracted
     from content ("Dell XPS 13" yields the run itself and its word components,
-    so a later mention of just "XPS" still overlaps). Computed at query time
-    by the density-preserving diversification pass - nothing is stored, so
-    existing rows benefit without migration or backfill.
+    so a later mention of just "XPS" still overlaps). Mixed-case product
+    tokens with an internal capital ("iPhone", "eBay") count as entity tokens
+    - their capitalization is intrinsic, never sentence-induced. Computed at
+    query time by the density-preserving diversification pass - nothing is
+    stored, so existing rows benefit without migration or backfill.
 
-    Single capitalized words at a sentence start are skipped (capitalization
-    carries no proper-noun signal there); multi-word runs are kept wherever
-    they appear. Capped at `max_keys` in first-occurrence order.
+    Noise filters, in order: dialogue-turn labels (a run directly followed by
+    ':' - "User:", "Human:", "Q:") are structural, never subjects; leading
+    stop-words are stripped from runs so sentence-initial articles never leak
+    in as keys ("The Rhine" -> "rhine", never "the"); single CAPITALIZED
+    words at a sentence start are skipped (no proper-noun signal there);
+    stop-words and conversational framing tokens are excluded everywhere.
+    Capped at `max_keys` in first-occurrence order.
     """
     keys: set[str] = set()
 
     def _add(raw: str) -> None:
         k = raw.strip().lower()
-        if k and len(keys) < max_keys and k not in _ENTITY_TOKEN_BLOCKLIST:
+        if (
+            k
+            and len(keys) < max_keys
+            and k not in _ENTITY_TOKEN_BLOCKLIST
+            and k not in _STOP_WORDS
+        ):
             keys.add(k)
 
     for t in tags or []:
@@ -188,14 +223,33 @@ def derive_entity_keys(
 
     for m in _ENTITY_RUN_RE.finditer(content):
         run = m.group(1)
+        end = m.end(1)
+        # Dialogue-turn label: structural framing, never a subject.
+        if end < len(content) and content[end] == ":":
+            continue
         words = run.split(" ")
+        # Strip leading stop-words ("The Rhine" at sentence start): the
+        # survivors were capitalized without sentence pressure, so they keep
+        # their proper-noun signal and skip the sentence-lead check below.
+        stripped = False
+        while words and words[0].lower() in _STOP_WORDS:
+            words = words[1:]
+            stripped = True
+        if not words:
+            continue
         if len(words) == 1:
             w = words[0]
-            if len(w) < 3 or _is_sentence_lead(content, m.start(1)):
+            if len(w) < 3:
+                continue
+            if (
+                not stripped
+                and w[0].isupper()
+                and _is_sentence_lead(content, m.start(1))
+            ):
                 continue
             _add(w)
         else:
-            _add(run)
+            _add(" ".join(words))
             for w in words:
                 if len(w) >= 3 and not w[0].isdigit():
                     _add(w)
@@ -422,10 +476,16 @@ class ExperienceEngine:
         2. **session/entity diversification** (multi-session): re-rank so the
            head of the result spreads across distinct subjects/sessions. The
            diversity key is `entity_key` when present, else `valid_from` (the
-           session/valid-time key). Round 1 takes the best (BM25-first)
-           experience per distinct key; round 2 fills remaining slots with the
-           leftovers in BM25 order. Experiences with NO diversity key (both
-           None) are never merged - each is its own group - so a store with no
+           session/valid-time key). The DEFAULT algorithm is the
+           density-preserving pass (`_diversify_density_preserving`): an
+           untouched BM25 anchor head, then a bounded, on-topic-gated
+           coverage pass promoting the best hit per unrepresented group; the
+           prior unconditional first-hit-per-key pass remains selectable via
+           KAIRN_DIVERSIFY_MODE=legacy for A/B measurement. When every
+           candidate already fits within `limit`, the density pass returns
+           raw BM25 order unchanged - diversification exists to fix
+           truncation loss, and nothing is truncated. Experiences with NO
+           diversity key are never merged, so a store with no
            windows/entities is returned unchanged.
 
         This is the recall path the LongMemEval harness measures via
@@ -476,9 +536,7 @@ class ExperienceEngine:
             if os.environ.get("KAIRN_DIVERSIFY_MODE", "density") == "legacy":
                 ordered = self._diversify_by_session(ordered)
             else:
-                terms = (
-                    set(re.findall(r'"([^"]+)"', fts_text)) if fts_text else None
-                )
+                terms = set(fts_keywords(text)) if text is not None else None
                 ordered = self._diversify_density_preserving(
                     ordered, limit=limit, query_terms=terms
                 )
@@ -513,66 +571,87 @@ class ExperienceEngine:
         Group identity matches the legacy pass (stored entity_key, else the
         full valid_from string = session identity); items with neither are
         never promoted or merged. Returns the input unchanged when it already
-        fits within `limit` (fallback identity).
+        fits within `limit` - diversification exists to fix truncation loss,
+        and nothing is truncated in that case. Returns at most `limit` items.
 
         Benchmark-tuning knobs (read per call so harness sweeps work without
-        code edits): KAIRN_DIVERSIFY_ANCHOR (default 4, adaptively capped at
-        limit//2) and KAIRN_DIVERSIFY_WINDOW (default 3, in multiples of
-        `limit`).
+        code edits; malformed values degrade to defaults via `_env_int`, never
+        crash recall): KAIRN_DIVERSIFY_ANCHOR (default 4, adaptively capped at
+        limit//2), KAIRN_DIVERSIFY_WINDOW (default 3, in multiples of
+        `limit`), KAIRN_DIVERSIFY_MIN_SHARED (default 2; clamped to the
+        query's actual term count; 0 disables the gate).
         """
         if len(experiences) <= limit:
             return experiences
 
-        anchor_n = max(
-            1, min(int(os.environ.get("KAIRN_DIVERSIFY_ANCHOR", "4")), limit // 2)
-        )
-        window_mult = int(os.environ.get("KAIRN_DIVERSIFY_WINDOW", "3"))
+        anchor_n = max(1, min(_env_int("KAIRN_DIVERSIFY_ANCHOR", 4), limit // 2))
+        window_mult = _env_int("KAIRN_DIVERSIFY_WINDOW", 3)
+
+        # On-topic gate strength. Clamped to the terms actually available: a
+        # 2-term query can never share 3 terms, and an operator-raised gate
+        # must stay strict for term-rich queries instead of silently
+        # collapsing to 1. Empirical note from the diag sweeps: scoring
+        # candidates by raw shared-term count performed WORSE than plain BM25
+        # order (verbose distractor rows out-count genuinely relevant ones;
+        # BM25's length normalization already handles this) - promotion
+        # therefore stays greedy in BM25 order and the term count is only a
+        # gate.
+        gate = _env_int("KAIRN_DIVERSIFY_MIN_SHARED", 2)
+        min_shared = min(gate, len(query_terms)) if query_terms else gate
 
         def group(e: Experience) -> str | None:
             return e.entity_key or e.valid_from
 
         anchor = experiences[:anchor_n]
         seen_groups = {g for e in anchor if (g := group(e)) is not None}
-        anchor_keys: set[str] = set()
-        for e in anchor:
-            anchor_keys |= derive_entity_keys(e.content, e.tags)
+        anchor_keys: set[str] | None = None  # computed lazily on first need
 
-        # On-topic gate strength (KAIRN_DIVERSIFY_MIN_SHARED, default 2;
-        # 0 disables the gate so BM25 rank alone selects promotions).
-        # Empirical note from the diag sweeps: scoring candidates by raw
-        # shared-term count performed WORSE than plain BM25 order (verbose
-        # distractor rows out-count genuinely relevant ones; BM25's length
-        # normalization already handles this) - promotion therefore stays
-        # greedy in BM25 order and the term count is only a gate.
-        gate = int(os.environ.get("KAIRN_DIVERSIFY_MIN_SHARED", "2"))
-        min_shared = gate if query_terms and len(query_terms) >= gate else min(gate, 1)
         window_end = min(len(experiences), anchor_n + window_mult * limit)
         slots = limit - anchor_n
 
         promoted: list[Experience] = []
-        promoted_ids: set[str] = set()
-        for e in experiences[anchor_n:window_end]:
+        promoted_idx: set[int] = set()
+        for idx in range(anchor_n, window_end):
             if len(promoted) >= slots:
                 break
+            e = experiences[idx]
             g = group(e)
             if g is None or g in seen_groups:
                 continue
             if min_shared > 0:
                 on_topic = False
                 if query_terms:
-                    content_l = e.content.lower()
-                    shared = sum(1 for t in query_terms if t in content_l)
-                    on_topic = shared >= min_shared
-                if not on_topic and anchor_keys & derive_entity_keys(e.content, e.tags):
-                    on_topic = True
+                    # Token-set membership, not substring containment: "art"
+                    # must not count inside "start"/"party".
+                    content_tokens = set(
+                        re.findall(r"[a-zA-Z0-9_]+", e.content.lower())
+                    )
+                    on_topic = len(query_terms & content_tokens) >= min_shared
+                if not on_topic:
+                    if anchor_keys is None:
+                        anchor_keys = set()
+                        for a in anchor:
+                            anchor_keys |= derive_entity_keys(a.content, a.tags)
+                    if anchor_keys & derive_entity_keys(e.content, e.tags):
+                        on_topic = True
                 if not on_topic:
                     continue
             seen_groups.add(g)
             promoted.append(e)
-            promoted_ids.add(e.id)
+            promoted_idx.add(idx)
 
-        rest = [e for e in experiences[anchor_n:] if e.id not in promoted_ids]
-        return anchor + promoted + rest
+        # Fill the remaining slots in BM25 order without materializing the
+        # full tail (the candidate list can be arbitrarily large) and using
+        # positional identity, which is collision-proof (Experience.id is a
+        # truncated UUID - id-based dedup could silently drop a distinct row
+        # on an id collision).
+        result = anchor + promoted
+        for idx in range(anchor_n, len(experiences)):
+            if len(result) >= limit:
+                break
+            if idx not in promoted_idx:
+                result.append(experiences[idx])
+        return result
 
     @staticmethod
     def _diversify_by_session(experiences: list[Experience]) -> list[Experience]:
