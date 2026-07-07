@@ -24,15 +24,24 @@ class MetadataStore:
         """Create database and apply schema."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(str(self.db_path))
-        self._db.row_factory = aiosqlite.Row
+        try:
+            self._db.row_factory = aiosqlite.Row
 
-        if self.wal_mode:
-            await self._db.execute("PRAGMA journal_mode=WAL")
-        await self._db.execute("PRAGMA foreign_keys=ON")
+            if self.wal_mode:
+                await self._db.execute("PRAGMA journal_mode=WAL")
+            await self._db.execute("PRAGMA foreign_keys=ON")
 
-        schema_sql = _load_sql("metadata.sql")
-        await self._db.executescript(schema_sql)
-        await self._db.commit()
+            schema_sql = _load_sql("metadata.sql")
+            await self._db.executescript(schema_sql)
+            await self._db.commit()
+        except BaseException:
+            # The open connection owns a non-daemon worker thread; callers
+            # only close stores that initialized successfully, so a failure
+            # past connect() must release the connection here or the thread
+            # leaks and blocks interpreter shutdown.
+            db, self._db = self._db, None
+            await db.close()
+            raise
         logger.info("Initialized metadata store at %s", self.db_path)
 
     async def close(self) -> None:
