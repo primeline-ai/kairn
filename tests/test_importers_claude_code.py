@@ -14,12 +14,14 @@ stored string is routed through the Phase 2 redaction module.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from kairn.config import Config
 from kairn.importers.claude_code import (
+    _MAX_CONTENT,
     IMPORT_NAMESPACE,
     SchemaError,
     assert_transcript_schema,
@@ -295,3 +297,65 @@ async def test_import_since_filters_older_sessions(
 
     result = await import_claude_code(store, [r], config=config, since="2026-01-01")
     assert result["imported"] == 1  # only the 2026 session
+
+
+# --- RC-gate regression tests --------------------------------------------
+
+
+async def test_import_redacts_secret_straddling_truncation_boundary(
+    tmp_path: Path, store: SQLiteStore, config: Config
+):
+    """RC-gate BLOCKER: a secret must be redacted at FULL length BEFORE the
+    _MAX_CONTENT truncation. Otherwise a secret straddling the cut is shortened
+    below its redaction rule's minimum match length, isn't matched, and its raw
+    tail is stored."""
+    r = tmp_path / "projects"
+    key = "AKIAIOSFODNN7EXAMPLE"  # AKIA + exactly 16 chars; the rule needs all 16
+    # "x " * 395 = 790 chars ending in a space, so the key sits at a word boundary
+    # (the redaction rule ignores mid-identifier matches) AND straddles char 800.
+    long_prompt = "x " * 395 + key + "b" * 60
+    _write_transcript(
+        r / "-proj" / "s.jsonl",
+        [
+            {
+                "type": "user",
+                "timestamp": "2026-01-02T10:00:00.000Z",
+                "message": {"role": "user", "content": long_prompt},
+            }
+        ],
+    )
+    result = await import_claude_code(store, [r], config=config)
+    assert result["redactions"] >= 1
+    exp = (await _imported(store))[0]
+    assert key not in exp["content"]
+    assert "AKIAIOSFO" not in exp["content"]  # not even a truncated fragment survives
+    assert len(exp["content"]) <= _MAX_CONTENT + len(" ...")  # truncation still applied
+
+
+def test_schema_error_is_valueerror():
+    """RC-gate: SchemaError must subclass ValueError so the CLI's _run_json emits
+    a clean JSON error envelope on real drift, not a raw traceback."""
+    assert issubclass(SchemaError, ValueError)
+
+
+async def test_import_schema_canary_checks_newest_file(
+    tmp_path: Path, store: SQLiteStore, config: Config
+):
+    """RC-gate: the drift canary must sample the NEWEST transcript (where a CC
+    release's schema change surfaces first), not the path-first (old) one."""
+    r = tmp_path / "projects"
+    old = r / "-proj" / "aaa_old.jsonl"  # sorts FIRST alphabetically (clean shape)
+    new = r / "-proj" / "zzz_new.jsonl"  # sorts LAST alphabetically (drifted shape)
+    _write_transcript(old, _good_records())
+    _write_transcript(
+        new,
+        [
+            {"kind": "user", "msg": {"speaker": "user", "body": "hi"}},
+            {"kind": "assistant", "msg": {"speaker": "assistant", "body": "yo"}},
+        ],
+    )
+    # Make the drifted file the most recently modified.
+    os.utime(old, (1_600_000_000, 1_600_000_000))
+    os.utime(new, (1_700_000_000, 1_700_000_000))
+    with pytest.raises(SchemaError):
+        await import_claude_code(store, [r], config=config)

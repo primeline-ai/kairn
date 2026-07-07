@@ -83,6 +83,30 @@ def test_import_claude_code_dry_run_writes_nothing(workspace: Path, transcript_r
     assert json.loads(stdout2)["experiences"] == 0
 
 
+def test_import_claude_code_schema_drift_clean_json_error(workspace: Path, tmp_path: Path):
+    """RC-gate: real schema drift must surface as a clean JSON error, not a raw
+    traceback (SchemaError subclasses ValueError -> caught by _run_json)."""
+    d = tmp_path / "projects" / "-proj"
+    d.mkdir(parents=True)
+    with (d / "drift.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"kind": "user", "msg": {"speaker": "user", "body": "hi"}}) + "\n")
+        fh.write(json.dumps({"kind": "assistant", "msg": {"speaker": "assistant"}}) + "\n")
+
+    rc, stdout, stderr = _run_kairn(
+        "import",
+        "claude-code",
+        str(workspace),
+        "--root",
+        str(tmp_path / "projects"),
+        "--yes",
+        check=False,
+    )
+    assert rc != 0
+    assert "Traceback" not in stderr
+    if stdout.strip():
+        assert "error" in json.loads(stdout)
+
+
 def test_import_claude_code_multiple_roots(workspace: Path, tmp_path: Path):
     r1 = tmp_path / "primary"
     r2 = tmp_path / "secondary"

@@ -20,8 +20,13 @@ Design choices:
   Assistant ``text``/``thinking``/``tool_use`` blocks are never read, so a
   ``kn_learn``/``kn_save``/``kn_add`` tool call can never be re-imported
   (Kairn ``d7a24b80``) - it is excluded by construction, not by a fragile filter.
-- **Privacy.** Every stored string (content AND ``source_ref``) is routed through
-  the Phase 2 redaction module before it touches the store.
+- **Privacy.** Every piece of transcript-derived text (the summary ``content`` and
+  ``context``) is routed through the Phase 2 redaction module before it touches the
+  store, and it is redacted at FULL length *before* any length truncation - so a
+  secret can never survive by straddling the truncation cut. The ``source_ref`` and
+  ``session_id`` in ``properties`` are tool-constructed identifiers (a local file
+  path and a UUID, never raw transcript prose) and are the idempotency key, so they
+  are stored as-is (mirrors the git importer).
 - **Schema resilience.** The CC JSONL schema is internal/undocumented and can
   drift between releases (Kairn ``82ed6779``). Parsing is defensive (malformed
   lines and unrecognized record shapes are skipped, never fatal) and
@@ -73,9 +78,14 @@ _SYSTEM_WRAPPER = re.compile(
 _BARE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-class SchemaError(RuntimeError):
+class SchemaError(ValueError):
     """A real transcript sample no longer matches the schema shape this parser
-    was built against - a loud drift canary (Kairn ``82ed6779``)."""
+    was built against - a loud drift canary (Kairn ``82ed6779``).
+
+    Subclasses ``ValueError`` (not ``RuntimeError``) so it flows through the CLI's
+    existing clean-error path (``_run_json``'s ``except ValueError``) and surfaces
+    as a JSON error envelope rather than a raw traceback - the same convention as
+    the git importer's ``GitLogError``."""
 
 
 def default_roots() -> list[Path]:
@@ -226,10 +236,10 @@ def extract_session_summary(records: list[dict], *, source_ref: str) -> dict | N
         return None
 
     title = (ai_title or "").strip()
-    body = first_prompt
-    if len(body) > _MAX_CONTENT:
-        body = body[:_MAX_CONTENT].rstrip() + " ..."
-    content = f"{title}\n\n{body}" if title else body
+    # Deliberately NOT truncated here. Truncation happens in import_claude_code
+    # AFTER redaction, so a secret straddling the length cut can never be shortened
+    # below its redaction rule's minimum match length and thereby survive un-masked.
+    content = f"{title}\n\n{first_prompt}" if title else first_prompt
     return {
         "content": content,
         "created_at": created_at,
@@ -244,6 +254,17 @@ def _file_mtime_iso(path: Path) -> str:
     """UTC-ISO file mtime - a deterministic fallback created_at for the rare
     session with no parseable timestamp in any record."""
     return datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
+
+
+def _sample_records(path: Path, limit: int = 200) -> list[dict]:
+    """The first ``limit`` parsed records - enough to schema-check a transcript
+    without reading a whole multi-MB file."""
+    out: list[dict] = []
+    for rec in _iter_records(path):
+        out.append(rec)
+        if len(out) >= limit:
+            break
+    return out
 
 
 async def import_claude_code(
@@ -266,7 +287,16 @@ async def import_claude_code(
     cutoff = _normalize_since(since) if since else None
 
     files = discover_transcripts(roots)
-    schema_checked = False
+
+    # Schema-drift canary: sample the MOST-RECENTLY-MODIFIED transcript that has
+    # content, where a new CC release's schema change surfaces first. Files are
+    # immutable and named by project+UUID, so a plain path-sort would freeze the
+    # check on an arbitrary OLD file that keeps its old (valid) shape forever.
+    for path in sorted(files, key=lambda p: p.stat().st_mtime, reverse=True):
+        sample = _sample_records(path)
+        if sample:
+            assert_transcript_schema(sample)
+            break
 
     imported = 0
     skipped_empty = 0
@@ -280,9 +310,6 @@ async def import_claude_code(
         records = list(_iter_records(path))
         if not records:
             continue
-        if not schema_checked:
-            assert_transcript_schema(records)  # drift canary on the first real file
-            schema_checked = True
 
         source_ref = f"claude-code:{path}"
         summary = extract_session_summary(records, source_ref=source_ref)
@@ -298,6 +325,11 @@ async def import_claude_code(
         result_redact = redact(summary["content"])
         content = result_redact.text
         redactions += len(result_redact.findings)
+        # Truncate AFTER redaction: at worst this splits a [REDACTED:...] placeholder
+        # (cosmetic), never a real secret - every secret was already masked at the
+        # summary's full length above.
+        if len(content) > _MAX_CONTENT:
+            content = content[:_MAX_CONTENT].rstrip() + " ..."
 
         exp_id = hashlib.sha256(source_ref.encode()).hexdigest()[:16]
 
