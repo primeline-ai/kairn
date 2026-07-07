@@ -275,13 +275,16 @@ numbers, including the bad ones - each red cell links to its diagnosis:
 
 | Category | n | Accuracy | Diagnosis |
 |----------|----|----------|-----------|
-| abstention | 30 | 96.7% | - |
 | single-session-user | 70 | 91.4% | - |
 | single-session-assistant | 56 | 83.9% | - |
 | knowledge-update | 78 | 70.5% | - |
 | temporal-reasoning | 133 | 42.9% | [why](BENCHMARKS.md#temporal-reasoning-429) |
 | multi-session | 133 | 41.4% | [why](BENCHMARKS.md#multi-session-414) |
 | single-session-preference | 30 | 10.0% | [why](BENCHMARKS.md#single-session-preference-100) |
+
+The 500 questions include 30 abstention variants (the right answer is to
+decline); they are counted inside their categories above and scored
+separately: Kairn declines correctly on **96.7%** of them.
 
 Recall latency is ~1.4 ms per query (FTS5, in-process, no network). Protocol,
 honesty notes, and reproduction steps: [BENCHMARKS.md](BENCHMARKS.md).

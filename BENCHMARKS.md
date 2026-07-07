@@ -34,7 +34,11 @@ and one-shot preferences. This is the roadmap, in data:
 | temporal-reasoning | 133 | 42.9% |
 | multi-session | 133 | 41.4% |
 | single-session-preference | 30 | 10.0% |
-| abstention | 30 | 96.7% |
+
+The six categories sum to the full 500. Thirty of those questions are
+abstention variants (`question_id` ending `_abs`, where the right answer is
+to decline); they are counted inside their categories above and scored
+separately as an overlay: **96.7%**.
 
 Read it as: Kairn reliably finds a fact stated once in a session (91%) and
 reliably declines to answer when the fact was never stated (97%). It loses
@@ -63,10 +67,9 @@ FAILED the accuracy gate on a 50-question pilot: multi-session 0.3846 vs
 0.4615 baseline (n=13, exactly one question worse). It therefore shipped
 library-only - the production recall path is byte-identical - and this cell
 is published unchanged. Two negative results worth keeping: any answer-blind
-promoter saturated near 0.82 coverage at top-k 8 (recall ceiling 0.951 in
-that configuration), and scored promotion did worse than plain BM25-greedy
-selection. The remaining gap looks like a reading/synthesis problem, not pure
-retrieval.
+promoter saturated near 0.82 session coverage at top-k 8, and scored
+promotion did worse than plain BM25-greedy selection. The remaining gap looks
+like a reading/synthesis problem, not pure retrieval.
 
 ### Single-session preference: 10.0%
 
