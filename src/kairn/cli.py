@@ -921,6 +921,7 @@ def doctor(path: str, check: str | None, as_json: bool) -> None:
         store, _intel = await _build_intel_stack(db_path)
         try:
             from kairn.diagnostic import run_checks
+
             return await run_checks(store, only=check)
         finally:
             await store.close()
@@ -956,9 +957,7 @@ def remove(
     Pass `--node-id` for node removal, or all three edge flags for an edge.
     """
     if not node_id and not (source_id and target_id and edge_type):
-        raise click.UsageError(
-            "Provide --node-id OR all of --source-id, --target-id, --edge-type"
-        )
+        raise click.UsageError("Provide --node-id OR all of --source-id, --target-id, --edge-type")
 
     db_path = _resolve_db(path)
 
@@ -1087,9 +1086,7 @@ def project(
                     raise ValueError(f"Project not found: {project_id}")
             else:
                 if phase is not None:
-                    raise ValueError(
-                        "phase cannot be set on create (starts at planning)"
-                    )
+                    raise ValueError("phase cannot be set on create (starts at planning)")
                 proj = await mem.create_project(
                     name=name,
                     goals=goals_list,
@@ -1506,6 +1503,92 @@ def import_git(path: str, repos: tuple[str, ...], since: str | None, dry_run: bo
                 for repo_path in resolved_repos
             ]
             return {"_v": "1.0", "results": results}
+        finally:
+            await store.close()
+
+    _run_json(_run)
+
+
+@import_group.command(name="claude-code")
+@click.argument("path", type=click.Path())
+@click.option(
+    "--root",
+    "roots",
+    multiple=True,
+    type=click.Path(),
+    help="Transcript root to scan (repeatable). Defaults to ~/.claude/projects "
+    "and ~/.claude-secondary/projects if they exist.",
+)
+@click.option("--since", default=None, help="Only import sessions on/after this date (YYYY-MM-DD)")
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without writing anything")
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Skip the interactive confirmation gate (non-interactive / automation)",
+)
+def import_claude_code(
+    path: str, roots: tuple[str, ...], since: str | None, dry_run: bool, yes: bool
+) -> None:
+    """Import Claude Code session history as coarse session-summary experiences.
+
+    One experience per session (the session's title + first prompt), routed
+    through secret redaction, written into the dedicated 'imported-claude-code'
+    namespace. Idempotent - re-running only imports genuinely new sessions.
+    A real (non-dry-run) run is gated behind an explicit confirmation; run
+    with --dry-run first to review exactly what would be stored.
+    """
+    from kairn.importers.claude_code import (
+        default_roots,
+        discover_transcripts,
+        import_claude_code,
+    )
+    from kairn.importers.redact import confirm_import
+
+    db_path = _resolve_db(path)
+    resolved_roots = [Path(r).expanduser() for r in roots] if roots else default_roots()
+    if not resolved_roots:
+        click.echo(
+            "Error: no transcript roots found (looked for ~/.claude/projects and "
+            "~/.claude-secondary/projects). Pass --root PATH.",
+            err=True,
+        )
+        sys.exit(1)
+
+    # No silent first-run writes: a real import is gated behind an explicit
+    # confirmation. Prompt/preview go to stderr so stdout stays pure JSON.
+    if not dry_run:
+        n_sessions = len(discover_transcripts(resolved_roots))
+        preview = (
+            f"About to import up to {n_sessions} Claude Code session summaries from:\n"
+            + "\n".join(f"  - {r}" for r in resolved_roots)
+            + "\ninto namespace 'imported-claude-code'. Secrets are redacted, but run "
+            "with --dry-run first to review exactly what would be stored."
+        )
+
+        def _stderr_prompt(msg: str) -> str:
+            click.echo(msg, nl=False, err=True)
+            return sys.stdin.readline()
+
+        if not confirm_import(
+            dry_run=False,
+            assume_yes=yes,
+            preview=preview,
+            prompt_fn=_stderr_prompt,
+            out=lambda m: click.echo(m, err=True),
+        ):
+            click.echo("Aborted - no experiences written.", err=True)
+            sys.exit(0)
+
+    async def _run() -> dict:
+        store = SQLiteStore(db_path)
+        await store.initialize()
+        try:
+            config = Config()
+            result = await import_claude_code(
+                store, resolved_roots, config=config, since=since, dry_run=dry_run
+            )
+            return {"_v": "1.0", "result": result}
         finally:
             await store.close()
 
