@@ -1,11 +1,11 @@
 # Kairn
 
 
-![kairn](assets/hero.png)
+![kairn](https://raw.githubusercontent.com/primeline-ai/kairn/main/assets/hero.png)
 
 > Context-aware knowledge engine for AI assistants.
 
-**Status: Alpha (v0.1.0).** The API and CLI are functional and tested (see
+**Status: Alpha.** The API and CLI are functional and tested (see
 [Development](#development)), but interfaces may still change between
 releases. Feedback and issues welcome.
 
@@ -278,16 +278,16 @@ numbers, including the bad ones - each red cell links to its diagnosis:
 | single-session-user | 70 | 91.4% | - |
 | single-session-assistant | 56 | 83.9% | - |
 | knowledge-update | 78 | 70.5% | - |
-| temporal-reasoning | 133 | 42.9% | [why](BENCHMARKS.md#temporal-reasoning-429) |
-| multi-session | 133 | 41.4% | [why](BENCHMARKS.md#multi-session-414) |
-| single-session-preference | 30 | 10.0% | [why](BENCHMARKS.md#single-session-preference-100) |
+| temporal-reasoning | 133 | 42.9% | [why](https://github.com/primeline-ai/kairn/blob/main/BENCHMARKS.md#temporal-reasoning-429) |
+| multi-session | 133 | 41.4% | [why](https://github.com/primeline-ai/kairn/blob/main/BENCHMARKS.md#multi-session-414) |
+| single-session-preference | 30 | 10.0% | [why](https://github.com/primeline-ai/kairn/blob/main/BENCHMARKS.md#single-session-preference-100) |
 
 The 500 questions include 30 abstention variants (the right answer is to
 decline); they are counted inside their categories above and scored
 separately: Kairn declines correctly on **96.7%** of them.
 
 Recall latency is ~1.4 ms per query (FTS5, in-process, no network). Protocol,
-honesty notes, and reproduction steps: [BENCHMARKS.md](BENCHMARKS.md).
+honesty notes, and reproduction steps: [BENCHMARKS.md](https://github.com/primeline-ai/kairn/blob/main/BENCHMARKS.md).
 
 This scorecard stays current: every release that touches recall re-publishes
 these numbers, and a weak cell stays on the board until the number actually
