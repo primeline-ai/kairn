@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
-VALID_TYPES = {"solution", "pattern", "decision", "workaround", "gotcha"}
+VALID_TYPES = {"solution", "pattern", "decision", "workaround", "gotcha", "preference"}
 VALID_CONFIDENCES = {"high", "medium", "low"}
 
 

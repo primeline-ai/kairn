@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 from fastmcp import Client
@@ -33,14 +34,14 @@ async def test_list_tools(client: Client):
     expected = {
         "kn_add", "kn_connect", "kn_query", "kn_remove", "kn_status",
         "kn_project", "kn_projects", "kn_log",
-        "kn_save", "kn_memories", "kn_prune",
+        "kn_save", "kn_preference", "kn_memories", "kn_prune",
         "kn_idea", "kn_ideas",
         "kn_learn", "kn_recall", "kn_crossref", "kn_context", "kn_related",
         "kn_promote_pending",
         "kn_judge", "kn_doctor",
     }
     assert expected.issubset(names)
-    assert len(names) == 21
+    assert len(names) == 22
 
 
 async def test_tool_descriptions_short(client: Client):
@@ -974,3 +975,35 @@ async def test_prompt_review_with_progress(client: Client):
     assert "Added auth module" in text
     assert "DB migration failed" in text
     assert "Add tests" in text
+
+
+# ── kn_preference (dedicated preference write path) ─────────────
+
+
+async def test_kn_preference_stores_long_half_life_experience(client: Client):
+    result = await client.call_tool("kn_preference", {
+        "content": "User prefers Adobe Premiere Pro tutorials focused on advanced settings",
+        "tags": ["video-editing"],
+    })
+    data = _data(result)
+    assert data["type"] == "preference"
+    assert data["confidence"] == "high"
+    # preference carries the longest half-life of any type (180d initial
+    # estimate); the response envelope rounds decay_rate to 6 places
+    assert data["decay_rate"] == round(math.log(2) / 180, 6)
+
+
+async def test_kn_preference_rejects_empty_content(client: Client):
+    result = await client.call_tool("kn_preference", {"content": "   "})
+    assert "error" in _data(result)
+
+
+async def test_kn_learn_accepts_preference_type(client: Client):
+    """Regression: type='preference' was rejected by VALID_TYPES validation
+    (hit live on 2026-06-11 and 2026-07-02) - it is a first-class type now."""
+    result = await client.call_tool("kn_learn", {
+        "content": "User prefers dark mode in all editors",
+        "type": "preference",
+    })
+    data = _data(result)
+    assert "error" not in data

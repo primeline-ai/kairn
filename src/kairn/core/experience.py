@@ -39,6 +39,12 @@ HALF_LIVES: dict[str, float] = {
     "decision": 100,   # p99 71.0d (already near-calibrated)
     "workaround": 40,  # sparse re-access signal; conservative
     "gotcha": 70,      # p99 32.4d
+    # INITIAL ESTIMATE, not tail-calibrated (no access data exists yet for
+    # this type): preferences are the most durable fact type Kairn stores -
+    # rarely superseded, unlike a solution or gotcha tied to a specific bug.
+    # Set above the longest calibrated value; re-calibrate once real
+    # preference-type access-tail data accumulates.
+    "preference": 180,
 }
 
 # NOTE on the dead salience signals (audited 2026-06-13, kept honestly inert):
