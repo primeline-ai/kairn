@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import sqlite3
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
@@ -30,10 +32,28 @@ def _json(data: dict[str, Any]) -> str:
 
 def create_server(db_path: str) -> FastMCP:
     """Create FastMCP server: 22 tools (5 graph + kn_judge + kn_doctor + 3 project + 4 exp + 2 ideas + 6 intel including kn_learn with candidates)."""
-    mcp = FastMCP("kairn", version="0.1.0")
-
     state: dict[str, Any] = {}
     _lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def _lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+        """Close the lazily-opened store when the server run ends.
+
+        The aiosqlite connection owns a non-daemon worker thread; without
+        this close, any process that ran a tool hangs at interpreter
+        shutdown waiting on that thread. State is cleared so a later run
+        on the same server object re-initializes cleanly.
+        """
+        try:
+            yield {}
+        finally:
+            async with _lock:
+                store = state.get("store")
+                state.clear()
+                if store is not None:
+                    await store.close()
+
+    mcp = FastMCP("kairn", version="0.1.0", lifespan=_lifespan)
 
     async def _init() -> dict[str, Any]:
         async with _lock:
