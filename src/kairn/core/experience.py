@@ -8,10 +8,11 @@ to the knowledge graph.
 import logging
 import math
 import os
+import re
 from datetime import UTC, datetime
 from typing import Any
 
-from kairn.core.fts import to_fts_query
+from kairn.core.fts import _STOP_WORDS, fts_keywords, to_fts_query
 from kairn.events.bus import EventBus
 from kairn.events.types import EventType
 from kairn.models.experience import VALID_CONFIDENCES, VALID_TYPES, Experience
@@ -87,6 +88,30 @@ def relevance_bucket(value: float) -> int:
     return round(value / RELEVANCE_BUCKET_SIZE)
 
 
+# Leading calendar-day pattern shared by both date conventions seen in real
+# data: ISO ("2023-05-20T03:39:00", "2023-05-20 ...") and the slash form
+# LongMemEval and conversational ingest use ("2023/05/20 (Sat) 02:21").
+_DATE_PREFIX_RE = re.compile(r"^\s*(\d{4})[-/](\d{2})[-/](\d{2})")
+
+
+def normalize_date_prefix(value: str | None) -> str | None:
+    """Extract a canonical ISO day prefix (YYYY-MM-DD) from a date-bearing string.
+
+    Both separator conventions normalize to the same comparable form, so
+    valid-time comparisons work across mixed conventions within one workspace
+    (previously a documented silent-breakage caveat of raw string slicing).
+    Returns None when the string does not start with a recognizable calendar
+    day - callers treat that as "no validity signal" (always eligible),
+    never as an error.
+    """
+    if value is None:
+        return None
+    m = _DATE_PREFIX_RE.match(value)
+    if m is None:
+        return None
+    return "-".join(m.groups())
+
+
 def derive_entity_key(content: str, tags: list[str] | None) -> str | None:
     """Derive a deterministic cross-session entity grouping key (rule-based).
 
@@ -107,6 +132,128 @@ def derive_entity_key(content: str, tags: list[str] | None) -> str | None:
         return None
     key = tags[0].strip().lower()
     return key or None
+
+
+# Tokens that appear capitalized in conversational ingest but never denote a
+# subject entity: the "[conversation on DATE (Sat) ...] User: ... Assistant:"
+# framing that both real transcript imports and the benchmark harness produce.
+# Deliberately separate from fts._STOP_WORDS (which IS also applied): these
+# are proper-noun-shaped framing tokens, not common words.
+_ENTITY_TOKEN_BLOCKLIST = {
+    "user", "assistant", "conversation",
+    "mon", "tue", "wed", "thu", "fri", "sat", "sun",
+}
+
+# An entity token: a capitalized word, or a mixed-case product token whose
+# capital is internal ("iPhone", "eBay", "macOS") - the lowercase lead means
+# the capitalization is intrinsic, never sentence-induced.
+_ENTITY_TOKEN = r"(?:[A-Z][\w'-]*|[a-z]{1,3}[A-Z][\w'-]*)"
+
+# A proper-noun run: an entity token optionally continued by further entity
+# tokens or number-bearing tokens joined by single spaces - "Dell XPS 13",
+# "Adobe Premiere Pro", "GPT-4 Turbo".
+_ENTITY_RUN_RE = re.compile(
+    rf"(?<![\w'-])({_ENTITY_TOKEN}(?:[ ](?:{_ENTITY_TOKEN}|\d[\w-]*))*)"
+)
+
+
+def _is_sentence_lead(content: str, start: int) -> bool:
+    """True when the token at `start` opens a sentence (or the whole string),
+    where capitalization carries no proper-noun signal. Skippable leading
+    punctuation and sentence terminators include the common Unicode
+    typographic forms (curly quotes, em/en dashes) seen in real transcripts."""
+    i = start - 1
+    while i >= 0 and content[i] in " \t\"'([{*“”‘’„":
+        i -= 1
+    return i < 0 or content[i] in ".!?\n:;]—–…"
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an integer tuning knob from the environment, falling back to the
+    default on missing OR malformed values - a stray non-numeric override
+    left over from a benchmark sweep must degrade to defaults, never crash
+    the recall path."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Ignoring malformed %s=%r; using default %d", name, raw, default)
+        return default
+
+
+def derive_entity_keys(
+    content: str, tags: list[str] | None, *, max_keys: int = 16
+) -> set[str]:
+    """Derive the full rule-based entity-key SET for an experience.
+
+    The multi-key, content-derived companion to `derive_entity_key` (which
+    stays the single stored key for schema stability). Zero LLM, zero
+    embeddings, deterministic: normalized tags plus proper-noun runs extracted
+    from content ("Dell XPS 13" yields the run itself and its word components,
+    so a later mention of just "XPS" still overlaps). Mixed-case product
+    tokens with an internal capital ("iPhone", "eBay") count as entity tokens
+    - their capitalization is intrinsic, never sentence-induced. Computed at
+    query time by the density-preserving diversification pass - nothing is
+    stored, so existing rows benefit without migration or backfill.
+
+    Noise filters, in order: dialogue-turn labels (a run directly followed by
+    ':' - "User:", "Human:", "Q:") are structural, never subjects; leading
+    stop-words are stripped from runs so sentence-initial articles never leak
+    in as keys ("The Rhine" -> "rhine", never "the"); single CAPITALIZED
+    words at a sentence start are skipped (no proper-noun signal there);
+    stop-words and conversational framing tokens are excluded everywhere.
+    Capped at `max_keys` in first-occurrence order.
+    """
+    keys: set[str] = set()
+
+    def _add(raw: str) -> None:
+        k = raw.strip().lower()
+        if (
+            k
+            and len(keys) < max_keys
+            and k not in _ENTITY_TOKEN_BLOCKLIST
+            and k not in _STOP_WORDS
+        ):
+            keys.add(k)
+
+    for t in tags or []:
+        _add(t)
+
+    for m in _ENTITY_RUN_RE.finditer(content):
+        run = m.group(1)
+        end = m.end(1)
+        # Dialogue-turn label: structural framing, never a subject.
+        if end < len(content) and content[end] == ":":
+            continue
+        words = run.split(" ")
+        # Strip leading stop-words ("The Rhine" at sentence start): the
+        # survivors were capitalized without sentence pressure, so they keep
+        # their proper-noun signal and skip the sentence-lead check below.
+        stripped = False
+        while words and words[0].lower() in _STOP_WORDS:
+            words = words[1:]
+            stripped = True
+        if not words:
+            continue
+        if len(words) == 1:
+            w = words[0]
+            if len(w) < 3:
+                continue
+            if (
+                not stripped
+                and w[0].isupper()
+                and _is_sentence_lead(content, m.start(1))
+            ):
+                continue
+            _add(w)
+        else:
+            _add(" ".join(words))
+            for w in words:
+                if len(w) >= 3 and not w[0].isdigit():
+                    _add(w)
+    return keys
 
 
 class ExperienceEngine:
@@ -321,19 +468,24 @@ class ExperienceEngine:
            NULL-`valid_from` experiences are always eligible. `valid_to` is NOT
            consulted here - validity-END is a separate concern and never
            affects recall ordering, preserving the decay/validity orthogonality.
-           CAVEAT: the day-prefix compare is a raw string slice, so `valid_from`
-           and `as_of` must share one date-separator convention within a
-           workspace ("YYYY/MM/DD ..." or ISO "YYYY-MM-DD..."); mixing the two
-           breaks chronological ordering silently (pre-existing limitation of
-           this string-based comparison, not introduced by day-granularity -
-           the prior minute-granular compare had the identical assumption).
+           Day prefixes are canonicalized via `normalize_date_prefix`, so the
+           two date conventions seen in real data ("YYYY/MM/DD ..." and ISO
+           "YYYY-MM-DD...") compare correctly even when mixed within one
+           workspace; a `valid_from` with no recognizable leading calendar day
+           carries no validity signal and stays always-eligible.
         2. **session/entity diversification** (multi-session): re-rank so the
            head of the result spreads across distinct subjects/sessions. The
            diversity key is `entity_key` when present, else `valid_from` (the
-           session/valid-time key). Round 1 takes the best (BM25-first)
-           experience per distinct key; round 2 fills remaining slots with the
-           leftovers in BM25 order. Experiences with NO diversity key (both
-           None) are never merged - each is its own group - so a store with no
+           session/valid-time key). The DEFAULT algorithm is the
+           density-preserving pass (`_diversify_density_preserving`): an
+           untouched BM25 anchor head, then a bounded, on-topic-gated
+           coverage pass promoting the best hit per unrepresented group; the
+           prior unconditional first-hit-per-key pass remains selectable via
+           KAIRN_DIVERSIFY_MODE=legacy for A/B measurement. When every
+           candidate already fits within `limit`, the density pass returns
+           raw BM25 order unchanged - diversification exists to fix
+           truncation loss, and nothing is truncated. Experiences with NO
+           diversity key are never merged, so a store with no
            windows/entities is returned unchanged.
 
         This is the recall path the LongMemEval harness measures via
@@ -352,19 +504,17 @@ class ExperienceEngine:
             text=fts_text, exp_type=exp_type, limit=100000, offset=0
         )
 
-        as_of_day = as_of[:10] if as_of is not None else None
+        as_of_day = normalize_date_prefix(as_of)
         now = datetime.now(UTC)
         scored: list[tuple[Experience, float]] = []
         for data in results:
             exp = Experience(**data)
             # as-of validity filter (valid-time, NOT valid_to / decay) - see
             # criterion 1 above for the day-granularity rationale.
-            if (
-                as_of_day is not None
-                and exp.valid_from is not None
-                and exp.valid_from[:10] > as_of_day
-            ):
-                continue
+            if as_of_day is not None:
+                vf_day = normalize_date_prefix(exp.valid_from)
+                if vf_day is not None and vf_day > as_of_day:
+                    continue
             current_relevance = exp.relevance(at=now)
             if current_relevance >= min_relevance:
                 scored.append((exp, current_relevance))
@@ -377,12 +527,131 @@ class ExperienceEngine:
         ordered = [exp for exp, _ in scored]
         # Session/entity diversification is an operator-toggleable kill-switch
         # (default ON). Set KAIRN_BITEMPORAL_DIVERSIFY=0 to use as-of validity
-        # filtering alone without diversification. Diversification raises
-        # answer-session coverage but can dilute answer-content density (a
-        # benchmarked regression, Kairn daf5cd8e) - the switch isolates the two.
+        # filtering alone without diversification. The default algorithm is the
+        # density-preserving pass (anchored, on-topic-gated); the prior
+        # unconditional first-hit-per-key pass (which diluted answer-content
+        # density - the benchmarked regression, Kairn daf5cd8e) remains
+        # selectable via KAIRN_DIVERSIFY_MODE=legacy for A/B measurement.
         if os.environ.get("KAIRN_BITEMPORAL_DIVERSIFY", "1") != "0":
-            ordered = self._diversify_by_session(ordered)
+            if os.environ.get("KAIRN_DIVERSIFY_MODE", "density") == "legacy":
+                ordered = self._diversify_by_session(ordered)
+            else:
+                terms = set(fts_keywords(text)) if text is not None else None
+                ordered = self._diversify_density_preserving(
+                    ordered, limit=limit, query_terms=terms
+                )
         return ordered[:limit]
+
+    @staticmethod
+    def _diversify_density_preserving(
+        experiences: list[Experience],
+        *,
+        limit: int,
+        query_terms: set[str] | None,
+    ) -> list[Experience]:
+        """Density-preserving session/entity diversification.
+
+        Replaces the unconditional first-hit-per-key promotion (which collapsed
+        answer-content density in the head - the benchmarked 0.31 regression,
+        Kairn `daf5cd8e`: "right sessions, wrong content") with a bounded,
+        on-topic coverage pass:
+
+        1. ANCHOR - the top-A BM25 hits stay untouched, preserving the
+           corroborating-rows density multi-excerpt answers need.
+        2. COVERAGE - walk the next W*limit candidates in BM25 order and
+           promote the best hit of each not-yet-represented session/entity
+           group into the head, but only when the hit is plausibly on-topic:
+           it shares >=2 query terms with the question (>=1 for single-term
+           queries), OR >=1 derived entity key (`derive_entity_keys`) with the
+           anchor set - the latter catches the aggregation case where the
+           question names a category ("laptops") while sessions name instances
+           ("Dell XPS 13").
+        3. FILL - everything else follows in original BM25 order.
+
+        Group identity matches the legacy pass (stored entity_key, else the
+        full valid_from string = session identity); items with neither are
+        never promoted or merged. Returns the input unchanged when it already
+        fits within `limit` - diversification exists to fix truncation loss,
+        and nothing is truncated in that case. Returns at most `limit` items.
+
+        Benchmark-tuning knobs (read per call so harness sweeps work without
+        code edits; malformed values degrade to defaults via `_env_int`, never
+        crash recall): KAIRN_DIVERSIFY_ANCHOR (default 4, adaptively capped at
+        limit//2), KAIRN_DIVERSIFY_WINDOW (default 3, in multiples of
+        `limit`), KAIRN_DIVERSIFY_MIN_SHARED (default 2; clamped to the
+        query's actual term count; 0 disables the gate).
+        """
+        if len(experiences) <= limit:
+            return experiences
+
+        anchor_n = max(1, min(_env_int("KAIRN_DIVERSIFY_ANCHOR", 4), limit // 2))
+        window_mult = _env_int("KAIRN_DIVERSIFY_WINDOW", 3)
+
+        # On-topic gate strength. Clamped to the terms actually available: a
+        # 2-term query can never share 3 terms, and an operator-raised gate
+        # must stay strict for term-rich queries instead of silently
+        # collapsing to 1. Empirical note from the diag sweeps: scoring
+        # candidates by raw shared-term count performed WORSE than plain BM25
+        # order (verbose distractor rows out-count genuinely relevant ones;
+        # BM25's length normalization already handles this) - promotion
+        # therefore stays greedy in BM25 order and the term count is only a
+        # gate.
+        gate = _env_int("KAIRN_DIVERSIFY_MIN_SHARED", 2)
+        min_shared = min(gate, len(query_terms)) if query_terms else gate
+
+        def group(e: Experience) -> str | None:
+            return e.entity_key or e.valid_from
+
+        anchor = experiences[:anchor_n]
+        seen_groups = {g for e in anchor if (g := group(e)) is not None}
+        anchor_keys: set[str] | None = None  # computed lazily on first need
+
+        window_end = min(len(experiences), anchor_n + window_mult * limit)
+        slots = limit - anchor_n
+
+        promoted: list[Experience] = []
+        promoted_idx: set[int] = set()
+        for idx in range(anchor_n, window_end):
+            if len(promoted) >= slots:
+                break
+            e = experiences[idx]
+            g = group(e)
+            if g is None or g in seen_groups:
+                continue
+            if min_shared > 0:
+                on_topic = False
+                if query_terms:
+                    # Token-set membership, not substring containment: "art"
+                    # must not count inside "start"/"party".
+                    content_tokens = set(
+                        re.findall(r"[a-zA-Z0-9_]+", e.content.lower())
+                    )
+                    on_topic = len(query_terms & content_tokens) >= min_shared
+                if not on_topic:
+                    if anchor_keys is None:
+                        anchor_keys = set()
+                        for a in anchor:
+                            anchor_keys |= derive_entity_keys(a.content, a.tags)
+                    if anchor_keys & derive_entity_keys(e.content, e.tags):
+                        on_topic = True
+                if not on_topic:
+                    continue
+            seen_groups.add(g)
+            promoted.append(e)
+            promoted_idx.add(idx)
+
+        # Fill the remaining slots in BM25 order without materializing the
+        # full tail (the candidate list can be arbitrarily large) and using
+        # positional identity, which is collision-proof (Experience.id is a
+        # truncated UUID - id-based dedup could silently drop a distinct row
+        # on an id collision).
+        result = anchor + promoted
+        for idx in range(anchor_n, len(experiences)):
+            if len(result) >= limit:
+                break
+            if idx not in promoted_idx:
+                result.append(experiences[idx])
+        return result
 
     @staticmethod
     def _diversify_by_session(experiences: list[Experience]) -> list[Experience]:
