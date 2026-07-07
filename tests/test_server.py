@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
+import threading
+import time
 
 import pytest
 from fastmcp import Client
@@ -1007,3 +1010,42 @@ async def test_kn_learn_accepts_preference_type(client: Client):
     })
     data = _data(result)
     assert "error" not in data
+
+
+# ── Store lifecycle ────────────────────────────────────────────
+
+
+def _aiosqlite_worker_idents() -> set[int]:
+    """Idents of live aiosqlite connection worker threads."""
+    return {
+        t.ident
+        for t in threading.enumerate()
+        if "_connection_worker_thread" in t.name
+    }
+
+
+async def test_no_thread_leak_after_session_close(tmp_path):
+    """Regression: the lazily-opened aiosqlite store owns a
+    non-daemon worker thread; the server must close it when the client
+    session ends, or the embedding process hangs at interpreter shutdown
+    (Py_FinalizeEx waits on the thread blocked in SimpleQueue.get())."""
+    baseline = _aiosqlite_worker_idents()
+    server = create_server(str(tmp_path / "leak.db"))
+    async with Client(server) as c:
+        await c.call_tool("kn_status", {})
+    deadline = time.monotonic() + 5.0
+    while _aiosqlite_worker_idents() - baseline and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    assert not _aiosqlite_worker_idents() - baseline
+
+
+async def test_server_reusable_after_session_close(tmp_path):
+    """After a session's store is closed, a new session on the same server
+    object must re-initialize cleanly and see the persisted data."""
+    server = create_server(str(tmp_path / "reuse.db"))
+    async with Client(server) as c:
+        await c.call_tool("kn_add", {"name": "Persist Me", "type": "concept"})
+    async with Client(server) as c:
+        data = _data(await c.call_tool("kn_query", {"text": "Persist"}))
+    assert data["count"] >= 1
+    assert "Persist Me" in [n["name"] for n in data["nodes"]]

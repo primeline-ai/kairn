@@ -919,3 +919,37 @@ async def test_store_not_initialized():
 async def test_increment_nonexistent_experience(store: SQLiteStore):
     result = await store.increment_access_count("nonexistent")
     assert result is None
+
+
+async def test_failed_initialize_closes_connection(tmp_path, monkeypatch):
+    """A failure after the connection opens must close it: the aiosqlite
+    worker thread is non-daemon, and a store that never reaches the caller
+    cannot be closed by anyone else."""
+    import asyncio
+    import threading
+    import time
+
+    import kairn.storage.sqlite_store as sqlite_store_mod
+
+    def _boom(filename: str) -> str:
+        raise RuntimeError("schema load failed")
+
+    monkeypatch.setattr(sqlite_store_mod, "_load_sql", _boom)
+
+    def _worker_idents() -> set[int]:
+        return {
+            t.ident
+            for t in threading.enumerate()
+            if "_connection_worker_thread" in t.name
+        }
+
+    baseline = _worker_idents()
+    store = SQLiteStore(tmp_path / "fail.db")
+    with pytest.raises(RuntimeError, match="schema load failed"):
+        await store.initialize()
+    assert store._db is None
+
+    deadline = time.monotonic() + 5.0
+    while _worker_idents() - baseline and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    assert not _worker_idents() - baseline

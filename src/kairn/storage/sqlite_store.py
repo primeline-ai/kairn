@@ -92,24 +92,33 @@ class SQLiteStore(StorageBackend):
         """Create database, apply schema and triggers."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(str(self.db_path))
-        self._db.row_factory = aiosqlite.Row
+        try:
+            self._db.row_factory = aiosqlite.Row
 
-        if self.wal_mode:
-            await self._db.execute("PRAGMA journal_mode=WAL")
-        await self._db.execute("PRAGMA foreign_keys=ON")
+            if self.wal_mode:
+                await self._db.execute("PRAGMA journal_mode=WAL")
+            await self._db.execute("PRAGMA foreign_keys=ON")
 
-        # Apply workspace schema
-        schema_sql = _load_sql("workspace.sql")
-        await self._db.executescript(schema_sql)
+            # Apply workspace schema
+            schema_sql = _load_sql("workspace.sql")
+            await self._db.executescript(schema_sql)
 
-        # Apply triggers (FTS5 + auto-promotion)
-        triggers_sql = _load_sql("triggers.sql")
-        await self._db.executescript(triggers_sql)
+            # Apply triggers (FTS5 + auto-promotion)
+            triggers_sql = _load_sql("triggers.sql")
+            await self._db.executescript(triggers_sql)
 
-        # Idempotent migrations for pre-existing databases
-        await self._migrate_schema()
+            # Idempotent migrations for pre-existing databases
+            await self._migrate_schema()
 
-        await self._db.commit()
+            await self._db.commit()
+        except BaseException:
+            # The open connection owns a non-daemon worker thread; callers
+            # only close stores that initialized successfully, so a failure
+            # past connect() must release the connection here or the thread
+            # leaks and blocks interpreter shutdown.
+            db, self._db = self._db, None
+            await db.close()
+            raise
         logger.info("Initialized SQLite store at %s", self.db_path)
 
     async def _migrate_schema(self) -> None:
