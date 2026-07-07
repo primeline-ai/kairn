@@ -42,7 +42,17 @@ def create_server(db_path: str) -> FastMCP:
         The aiosqlite connection owns a non-daemon worker thread; without
         this close, any process that ran a tool hangs at interpreter
         shutdown waiting on that thread. State is cleared so a later run
-        on the same server object re-initializes cleanly.
+        on the same server object re-initializes cleanly; deliberately,
+        that also resets the ``init_failed`` marker, so a failed init is
+        retried on the next run instead of pinning the server object to
+        the failure. The yielded dict is an unused placeholder required
+        by the lifespan protocol - ``state`` is the real per-run state.
+
+        Constraint: fastmcp runs this lifespan once per process for the
+        stdio and HTTP transports, but per client connection for the
+        in-memory transport, where teardown fires when the first
+        connected session exits. Concurrent in-memory sessions on one
+        server object are therefore not supported.
         """
         try:
             yield {}
