@@ -269,6 +269,8 @@ Half-lives are calibrated against the real access tail of a production experienc
 
 ## Benchmarks
 
+![Kairn benchmark scorecard: 56.2% overall on LongMemEval-S, 500 questions scored, per-category accuracy from 91.4% down to a published 10.0% weak cell](https://raw.githubusercontent.com/primeline-ai/kairn/main/assets/benchmark-scorecard.png)
+
 Kairn scores **56.2% overall on LongMemEval-S** (500/500 questions scored,
 GPT-4o reader + judge, single run, 0 errors). These are the real per-category
 numbers, including the bad ones - each red cell links to its diagnosis:
@@ -302,7 +304,26 @@ kairn status <path>            # Graph stats
 kairn demo <path>              # Interactive tutorial
 kairn benchmark <path>         # Local performance benchmarks (latency, not LongMemEval)
 kairn token-audit <path>       # Audit tool token usage
+kairn import git <path> <repo>...  # Import git commit history (zero-LLM, offline)
 ```
+
+### Importing your history
+
+`kairn import git <workspace> <repo>...` backfills a Kairn store from one or
+more local git repositories at $0 - no LLM calls, no network calls. Conventional-commit
+prefixes map to experience types (`fix:` -> solution, `feat:`/`refactor:`/`perf:` -> pattern,
+everything else -> decision); merge commits are skipped. Imported experiences land in a
+dedicated `imported-git` namespace, separate from your organic knowledge, so they're always
+distinguishable and a bad import is fully reversible.
+
+```bash
+kairn import git ~/brain ~/code/my-project --dry-run   # Preview first
+kairn import git ~/brain ~/code/my-project              # Then import for real
+kairn import git ~/brain ~/code/proj-a ~/code/proj-b --since 2026-01-01
+```
+
+Idempotent - re-running only imports commits that weren't already imported, so it's safe
+to run again as a repo's history grows.
 
 ## Configuration
 

@@ -128,6 +128,15 @@ class StorageBackend(ABC):
         """Hard-delete an experience."""
 
     @abstractmethod
+    async def delete_experiences_by_namespace(self, namespace: str) -> int:
+        """Hard-delete all experiences in a namespace. Returns rows deleted.
+
+        Used for rollback of namespace-scoped bulk writes (e.g. import
+        features) - never used on the default 'knowledge' namespace by
+        any built-in caller.
+        """
+
+    @abstractmethod
     async def get_promotable_experiences(
         self, *, limit: int | None = None
     ) -> list[dict[str, Any]]:
