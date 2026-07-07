@@ -90,3 +90,19 @@ def test_import_git_missing_repo_errors(workspace: Path, tmp_path: Path):
         "import", "git", str(workspace), str(tmp_path / "nope"), check=False
     )
     assert rc != 0
+
+
+def test_import_git_empty_repo_errors_cleanly(workspace: Path, tmp_path: Path):
+    """RC-gate finding: an unborn-HEAD repo must produce a clean JSON error
+    + non-zero exit, not a raw Python traceback."""
+    empty_repo = tmp_path / "empty_repo"
+    empty_repo.mkdir()
+    _git(empty_repo, "init", "-q", "-b", "main")
+
+    rc, stdout, stderr = _run_kairn("import", "git", str(workspace), str(empty_repo), check=False)
+
+    assert rc != 0
+    assert "Traceback" not in stderr
+    if stdout.strip():
+        data = json.loads(stdout)
+        assert "error" in data

@@ -11,6 +11,7 @@ import hashlib
 import re
 import sqlite3
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -33,39 +34,76 @@ _TYPE_MAP = {
     "perf": "pattern",
 }
 
-_MERGE_RE = re.compile(r"^Merge\b", re.IGNORECASE)
 _CONVENTIONAL_RE = re.compile(r"^([a-z]+)(\([^)]*\))?!?:\s")
 
 
-def classify_commit_type(subject: str) -> str | None:
+class GitLogError(ValueError):
+    """Raised when `git log` fails - empty repo (unborn HEAD), not a git
+    repository, etc. A subclass of ValueError so it flows through the
+    CLI's existing clean-error path (_run_json) without special-casing."""
+
+
+def classify_commit_type(subject: str) -> str:
     """Map a commit subject line to a Kairn experience type.
 
-    Returns None for merge commits - filtered out per the import plan,
-    they carry branch-topology noise, not independent decision signal.
+    Pure prefix mapping - merge-ness is NOT decided here. A commit whose
+    subject happens to start with the word "Merge" (e.g. "Merge duplicate
+    customer records") is not a git merge commit and must not be treated
+    as one; see `_iter_commits`, which uses git's own parent count.
     """
-    if _MERGE_RE.match(subject):
-        return None
     match = _CONVENTIONAL_RE.match(subject)
     if match:
         return _TYPE_MAP.get(match.group(1), "decision")
     return "decision"
 
 
-def _iter_commits(repo_path: Path, *, since: str | None = None) -> list[dict[str, str]]:
+def _to_utc_iso(date_str: str) -> str:
+    """Normalize an ISO-8601 date (any offset) to a UTC ISO-8601 string.
+
+    Kairn's created_at/valid_from convention is always UTC (see
+    Experience.created_at's default_factory) - storage-layer raw string
+    comparisons (query_experiences_since) implicitly depend on this, so a
+    commit authored in a non-UTC timezone must be converted, not stored
+    with its original offset.
+    """
+    dt = datetime.fromisoformat(date_str)
+    return dt.astimezone(UTC).isoformat()
+
+
+def _iter_commits(repo_path: Path, *, since: str | None = None) -> list[dict[str, Any]]:
     """Run `git log` and parse commits via a control-character-delimited
     format, robust against arbitrary punctuation/newlines in messages."""
-    fmt = f"%H{_FIELD_SEP}%aI{_FIELD_SEP}%s{_FIELD_SEP}%b{_RECORD_SEP}"
+    fmt = f"%H{_FIELD_SEP}%P{_FIELD_SEP}%aI{_FIELD_SEP}%s{_FIELD_SEP}%b{_RECORD_SEP}"
     args = ["git", "log", f"--format={fmt}"]
     if since:
         args.append(f"--since={since}")
-    result = subprocess.run(args, cwd=repo_path, check=True, capture_output=True, text=True)
+    result = subprocess.run(
+        args,
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise GitLogError(
+            f"git log failed in {repo_path}: {result.stderr.strip() or 'unknown error'}"
+        )
     commits = []
     for record in result.stdout.split(_RECORD_SEP):
         record = record.strip("\n")
         if not record:
             continue
-        sha, author_date, subject, body = record.split(_FIELD_SEP, 3)
-        commits.append({"sha": sha, "date": author_date, "subject": subject, "body": body.strip()})
+        sha, parents, author_date, subject, body = record.split(_FIELD_SEP, 4)
+        commits.append(
+            {
+                "sha": sha,
+                "is_merge": len(parents.split()) > 1,
+                "date": _to_utc_iso(author_date),
+                "subject": subject,
+                "body": body.strip(),
+            }
+        )
     return commits
 
 
@@ -82,6 +120,9 @@ async def import_git_repo(
     Idempotent: the experience id is derived deterministically from the
     commit SHA, so re-running is a no-op for already-imported commits -
     the duplicate-primary-key insert is caught and counted, not errored.
+    A collision (a different commit landing on the same id) is verified
+    against the existing row's source_ref and reported separately, never
+    silently miscounted as a duplicate or allowed to clobber the row.
     """
     config = config or Config()
     repo_path = Path(repo_path).expanduser().resolve()
@@ -90,20 +131,21 @@ async def import_git_repo(
     imported = 0
     skipped_merge = 0
     skipped_duplicate = 0
+    collisions = 0
     preview: list[dict[str, str]] = []
 
     for commit in commits:
-        exp_type = classify_commit_type(commit["subject"])
-        if exp_type is None:
+        if commit["is_merge"]:
             skipped_merge += 1
             continue
 
+        exp_type = classify_commit_type(commit["subject"])
         content = commit["subject"]
         if commit["body"]:
             content = f"{commit['subject']}\n\n{commit['body']}"
 
         source_ref = f"git:{repo_path}:{commit['sha']}"
-        exp_id = hashlib.sha256(source_ref.encode()).hexdigest()[:8]
+        exp_id = hashlib.sha256(source_ref.encode()).hexdigest()[:16]
         created_at = commit["date"]
 
         if dry_run:
@@ -134,7 +176,12 @@ async def import_git_repo(
             await store.insert_experience(payload)
             imported += 1
         except sqlite3.IntegrityError:
-            skipped_duplicate += 1
+            existing = await store.get_experience(exp_id)
+            existing_ref = (existing or {}).get("properties", {}).get("source_ref")
+            if existing_ref == source_ref:
+                skipped_duplicate += 1
+            else:
+                collisions += 1
 
     result: dict[str, Any] = {
         "repo": str(repo_path),
@@ -142,6 +189,7 @@ async def import_git_repo(
         "imported": imported,
         "skipped_merge": skipped_merge,
         "skipped_duplicate": skipped_duplicate,
+        "collisions": collisions,
         "dry_run": dry_run,
     }
     if dry_run:
