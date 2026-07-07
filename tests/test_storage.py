@@ -921,6 +921,65 @@ async def test_increment_nonexistent_experience(store: SQLiteStore):
     assert result is None
 
 
+async def test_insert_experience_duplicate_id_raises(store: SQLiteStore):
+    """Duplicate primary key must raise, not silently overwrite - this is the
+    dedup mechanism import features rely on (deterministic id -> re-import is
+    a no-op via caught IntegrityError, not a second row)."""
+    import sqlite3
+
+    exp = {
+        "id": "dup1",
+        "type": "solution",
+        "content": "first",
+        "context": None,
+        "confidence": "high",
+        "score": 1.0,
+        "decay_rate": 0.00347,
+        "tags": None,
+        "properties": None,
+        "created_by": None,
+        "access_count": 0,
+        "promoted_to_node_id": None,
+        "created_at": _now(),
+        "last_accessed": None,
+    }
+    await store.insert_experience(exp)
+    with pytest.raises(sqlite3.IntegrityError):
+        await store.insert_experience({**exp, "content": "second"})
+
+
+async def test_delete_experiences_by_namespace(store: SQLiteStore):
+    base = {
+        "type": "solution",
+        "content": "x",
+        "context": None,
+        "confidence": "high",
+        "score": 1.0,
+        "decay_rate": 0.00347,
+        "tags": None,
+        "properties": None,
+        "created_by": None,
+        "access_count": 0,
+        "promoted_to_node_id": None,
+        "created_at": _now(),
+        "last_accessed": None,
+    }
+    await store.insert_experience({**base, "id": "imp1", "namespace": "imported-git"})
+    await store.insert_experience({**base, "id": "imp2", "namespace": "imported-git"})
+    await store.insert_experience({**base, "id": "org1", "namespace": "knowledge"})
+
+    deleted = await store.delete_experiences_by_namespace("imported-git")
+
+    assert deleted == 2
+    assert await store.get_experience("imp1") is None
+    assert await store.get_experience("imp2") is None
+    assert await store.get_experience("org1") is not None
+
+
+async def test_delete_experiences_by_namespace_empty(store: SQLiteStore):
+    assert await store.delete_experiences_by_namespace("does-not-exist") == 0
+
+
 async def test_failed_initialize_closes_connection(tmp_path, monkeypatch):
     """A failure after the connection opens must close it: the aiosqlite
     worker thread is non-daemon, and a store that never reaches the caller

@@ -617,6 +617,13 @@ class SQLiteStore(StorageBackend):
         await self.db.commit()
         return cursor.rowcount > 0
 
+    async def delete_experiences_by_namespace(self, namespace: str) -> int:
+        cursor = await self.db.execute(
+            "DELETE FROM experiences WHERE namespace = ?", (namespace,)
+        )
+        await self.db.commit()
+        return cursor.rowcount
+
     async def query_experiences_since(
         self,
         since: str,

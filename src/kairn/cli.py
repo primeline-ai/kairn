@@ -18,6 +18,9 @@ Projects + work log:
 Ideas:
     idea, ideas
 
+Bulk import (zero-LLM, $0):
+    import git
+
 All intelligence/graph/projects/ideas subcommands emit a versioned JSON
 envelope ({"_v": "1.0", ...}) on stdout. The `query --since --format json`
 variant emits a bare JSON list for replication consumers.
@@ -1461,6 +1464,52 @@ def token_audit(path: str) -> None:
             )
 
     asyncio.run(_token_audit())
+
+
+@main.group(name="import")
+def import_group() -> None:
+    """Bulk-import external history into Kairn (zero-LLM, $0, offline)."""
+
+
+@import_group.command(name="git")
+@click.argument("path", type=click.Path())
+@click.argument("repos", nargs=-1, required=True, type=click.Path())
+@click.option("--since", default=None, help="Only import commits since this date")
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without writing anything")
+def import_git(path: str, repos: tuple[str, ...], since: str | None, dry_run: bool) -> None:
+    """Import commit history from one or more local git repos.
+
+    Conventional-commit prefixes map to experience types (fix->solution,
+    feat/refactor/perf->pattern, everything else->decision); merge commits
+    are skipped. Writes into the dedicated 'imported-git' namespace and is
+    idempotent - re-running only imports genuinely new commits.
+    """
+    from kairn.importers.git import import_git_repo
+
+    db_path = _resolve_db(path)
+
+    resolved_repos: list[Path] = []
+    for repo in repos:
+        repo_path = Path(repo).expanduser().resolve()
+        if not repo_path.is_dir():
+            click.echo(f"Error: No such directory: {repo_path}", err=True)
+            sys.exit(1)
+        resolved_repos.append(repo_path)
+
+    async def _run() -> dict:
+        store = SQLiteStore(db_path)
+        await store.initialize()
+        try:
+            config = Config()
+            results = [
+                await import_git_repo(store, repo_path, config=config, since=since, dry_run=dry_run)
+                for repo_path in resolved_repos
+            ]
+            return {"_v": "1.0", "results": results}
+        finally:
+            await store.close()
+
+    _run_json(_run)
 
 
 if __name__ == "__main__":
