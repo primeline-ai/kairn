@@ -34,7 +34,7 @@ Kairn is different:
 - **Context Router + Progressive Disclosure** - Automatically loads relevant subgraphs based on keywords, starting with summaries and drilling into details only when needed. No other tool does this.
 - **Knowledge Graph with FTS5** - Not flat storage. Typed relationships (`depends-on`, `resolves`, `causes`) between nodes with provenance tracking and full-text search across everything.
 - **Experience Decay + Auto-Promotion** - Experiences lose relevance over time (biological decay model). Frequently-accessed experiences auto-promote to permanent knowledge. Your AI naturally forgets what doesn't matter.
-- **21 MCP Tools** - Works with Claude Desktop, Cursor, VS Code, Windsurf, and any MCP client. Includes `kn_judge` for 5-verb relationship judgments and `kn_doctor` for read-only health diagnostics.
+- **22 MCP Tools** - Works with Claude Desktop, Cursor, VS Code, Windsurf, and any MCP client. Includes `kn_judge` for 5-verb relationship judgments and `kn_doctor` for read-only health diagnostics.
 - **Per-Workspace Isolation** - Each workspace is its own isolated SQLite store. JWT auth and role-based access control (owner / maintainer / contributor / reader) ship for team deployments.
 
 ## Quick Start
@@ -103,7 +103,7 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
 }
 ```
 
-Restart your editor. Kairn's 21 tools appear in the MCP section.
+Restart your editor. Kairn's 22 tools appear in the MCP section.
 
 ## First 5 Minutes
 
@@ -139,20 +139,21 @@ Run `kairn status ~/brain` any time as a smoke test - if it prints a JSON stats 
 
 ### Which tool when
 
-21 tools is a lot to hold in your head on day one. Most sessions only need these:
+22 tools is a lot to hold in your head on day one. Most sessions only need these:
 
 | You want to... | Use | Why |
 |---|---|---|
 | Remember something new (a decision, gotcha, pattern, solution) | `kn_learn` | Default entry point - auto-routes to a permanent node (high confidence) or a decaying experience (medium/low), no need to decide yourself |
+| Capture a stated user preference the moment it is expressed | `kn_preference` | Dedicated preference write path - you (the calling model) state the preference as one explicit sentence; stored with the longest half-life of any type |
 | Add a permanent named concept you already know is durable | `kn_add` | Skips decay entirely - for structural knowledge, not day-to-day experience |
 | Log a one-off experience with explicit confidence/decay control | `kn_save` | Lower-level primitive `kn_learn` wraps - reach for it when you want to set confidence/decay yourself |
 | Search the permanent knowledge graph by text, type, tags, or namespace | `kn_query` | You're looking for nodes, not decaying experiences |
 | Search saved experiences, ranked by relevance and decay | `kn_memories` | You're looking for experience content (solutions, gotchas, workarounds), not graph nodes |
 | Surface everything relevant to a topic in one call | `kn_recall` (flat list) or `kn_context` (subgraph, progressive disclosure: summary first, full detail on demand) | You don't know yet whether the answer is a node or an experience - let Kairn search both |
 
-Everything else (`kn_crossref`, `kn_related`, `kn_connect`, `kn_judge`, `kn_project`/`kn_projects`/`kn_log`, `kn_idea`/`kn_ideas`, `kn_promote_pending`, `kn_prune`, `kn_remove`, `kn_status`, `kn_doctor`) is advanced usage - see the full [21 Tools](#21-tools-kn_-prefix) reference below once you're past the basics.
+Everything else (`kn_crossref`, `kn_related`, `kn_connect`, `kn_judge`, `kn_project`/`kn_projects`/`kn_log`, `kn_idea`/`kn_ideas`, `kn_promote_pending`, `kn_prune`, `kn_remove`, `kn_status`, `kn_doctor`) is advanced usage - see the full [22 Tools](#22-tools-kn_-prefix) reference below once you're past the basics.
 
-## 21 Tools (kn_ prefix)
+## 22 Tools (kn_ prefix)
 
 All tools follow MCP protocol with JSON responses.
 
@@ -175,11 +176,12 @@ All tools follow MCP protocol with JSON responses.
 | `kn_projects` | List projects, switch active |
 | `kn_log` | Log progress or failure entry |
 
-### Experience Memory (4)
+### Experience Memory (5)
 
 | Tool | Description |
 |------|-------------|
 | `kn_save` | Save experience with decay |
+| `kn_preference` | Capture a stated user preference at utterance time (longest half-life) |
 | `kn_memories` | Decay-aware experience search |
 | `kn_prune` | Remove expired experiences |
 | `kn_promote_pending` | Promote high-access experiences to permanent nodes |
@@ -226,7 +228,7 @@ All tools follow MCP protocol with JSON responses.
 Any MCP Client (Claude, Cursor, VS Code)
         │
         ▼ MCP Protocol (stdio)
-FastMCP Server (21 tools)
+FastMCP Server (22 tools)
         │
    ┌────┼────┐
    ▼    ▼    ▼
@@ -254,8 +256,9 @@ relevance(t) = initial_score × e^(-decay_rate × days)
 | decision | 100 days | Context-dependent |
 | workaround | 40 days | Temporary fixes fade fast |
 | gotcha | 70 days | Tricky pitfalls stay relevant |
+| preference | 180 days | Durable user preferences - initial estimate, not yet tail-calibrated |
 
-Half-lives are calibrated against the real access tail of a production experience store, not guessed.
+Half-lives are calibrated against the real access tail of a production experience store, not guessed (one exception: `preference` is a new type with no access history yet, so its value is a documented initial estimate until real data accumulates).
 
 **Confidence routing** via `kn_learn`:
 - `high` → Permanent node + experience (no decay)
@@ -304,7 +307,7 @@ ruff check src/ && ruff format src/
 
 ```
 src/kairn/
-├── server.py              # FastMCP server + 21 tools
+├── server.py              # FastMCP server + 22 tools
 ├── cli.py                 # CLI commands
 ├── config.py              # Configuration
 ├── core/

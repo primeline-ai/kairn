@@ -29,7 +29,7 @@ def _json(data: dict[str, Any]) -> str:
 
 
 def create_server(db_path: str) -> FastMCP:
-    """Create FastMCP server: 21 tools (5 graph + kn_judge + kn_doctor + 3 project + 3 exp + 2 ideas + 6 intel including kn_learn with candidates)."""
+    """Create FastMCP server: 22 tools (5 graph + kn_judge + kn_doctor + 3 project + 4 exp + 2 ideas + 6 intel including kn_learn with candidates)."""
     mcp = FastMCP("kairn", version="0.1.0")
 
     state: dict[str, Any] = {}
@@ -553,14 +553,14 @@ def create_server(db_path: str) -> FastMCP:
             }
         )
 
-    # ── Experience Memory tools (3) ──────────────────────────
+    # ── Experience Memory tools (5) ──────────────────────────
 
     @mcp.tool()
     async def kn_save(
         content: Annotated[str, Field(description="What was learned/discovered")],
         type: Annotated[
             str,
-            Field(description="solution|pattern|decision|workaround|gotcha"),
+            Field(description="solution|pattern|decision|workaround|gotcha|preference"),
         ],
         context: Annotated[
             str | None,
@@ -587,6 +587,69 @@ def create_server(db_path: str) -> FastMCP:
                 context=context,
                 confidence=confidence,
                 tags=tags,
+            )
+        except ValueError as e:
+            return _json({"_v": "1.0", "error": str(e)})
+
+        return _json(
+            {
+                "_v": "1.0",
+                "id": exp.id,
+                "type": exp.type,
+                "confidence": exp.confidence,
+                "decay_rate": round(exp.decay_rate, 6),
+                "score": exp.score,
+            }
+        )
+
+    @mcp.tool()
+    async def kn_preference(
+        content: Annotated[
+            str,
+            Field(
+                description="The user preference as ONE explicit, standalone "
+                "sentence (e.g. 'User prefers Adobe Premiere Pro tutorials "
+                "focused on advanced settings'). You, the calling model, are "
+                "the extractor: state the preference explicitly rather than "
+                "pasting the raw conversation."
+            ),
+        ],
+        context: Annotated[
+            str | None,
+            Field(description="Situation in which the preference was stated"),
+        ] = None,
+        tags: Annotated[
+            list[str] | None,
+            Field(description="Tags for categorization (subject of the preference)"),
+        ] = None,
+        namespace: Annotated[
+            str,
+            Field(
+                description="Namespace for multi-tenant isolation "
+                "(default 'knowledge')",
+            ),
+        ] = "knowledge",
+    ) -> str:
+        """Capture a stated user preference at utterance time.
+
+        The dedicated write path for preferences: stores a `preference`-type
+        experience with the longest half-life of any type (durable by
+        default). Call it the moment a preference is expressed - the host
+        model hearing the preference is the extraction step; Kairn's server
+        stays deterministic and never runs an LLM.
+        """
+        if not content or not content.strip():
+            return _json({"_v": "1.0", "error": "content is required"})
+
+        s = await _init()
+        try:
+            exp = await s["experience"].save(
+                content=content.strip(),
+                type="preference",
+                context=context,
+                confidence="high",
+                tags=tags,
+                namespace=namespace,
             )
         except ValueError as e:
             return _json({"_v": "1.0", "error": str(e)})
@@ -827,7 +890,7 @@ def create_server(db_path: str) -> FastMCP:
         content: Annotated[str, Field(description="What was learned/decided/discovered")],
         type: Annotated[
             str,
-            Field(description="decision|pattern|solution|workaround|gotcha"),
+            Field(description="decision|pattern|solution|workaround|gotcha|preference"),
         ],
         context: Annotated[
             str | None,
