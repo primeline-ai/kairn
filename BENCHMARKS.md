@@ -15,7 +15,7 @@ turns, answer, and a judge scores the answer against gold.
 
 | Run | Date | Reader | Judge | Sample | Score |
 |-----|------|--------|-------|--------|-------|
-| `full-500-s` | 2026-06-12 | GPT-4o | GPT-4o | 500 / 500 | **0.562** |
+| `full-500-s-fixed` | 2026-06-12 | GPT-4o | GPT-4o | 500 / 500 | **0.562** |
 
 500 of 500 questions scored, 0 errors. Mean recall latency: **1.4 ms** per
 query (FTS5, in-process, no network).
