@@ -70,13 +70,30 @@ def _to_utc_iso(date_str: str) -> str:
     return dt.astimezone(UTC).isoformat()
 
 
+_BARE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _normalize_since(since: str) -> str:
+    """A bare 'YYYY-MM-DD' passed to `git log --since` is parsed by git as
+    that date AT THE CURRENT WALL-CLOCK TIME, not midnight - a real git
+    quirk (confirmed empirically) that would silently exclude same-day
+    commits earlier than whatever time the import happens to run.
+    Force midnight so "--since 2026-01-02" means the whole day, regardless
+    of what time the command is invoked. Anything else (a full datetime,
+    a relative date like "2 weeks ago") is passed through unchanged.
+    """
+    if _BARE_DATE_RE.match(since):
+        return f"{since} 00:00:00"
+    return since
+
+
 def _iter_commits(repo_path: Path, *, since: str | None = None) -> list[dict[str, Any]]:
     """Run `git log` and parse commits via a control-character-delimited
     format, robust against arbitrary punctuation/newlines in messages."""
     fmt = f"%H{_FIELD_SEP}%P{_FIELD_SEP}%aI{_FIELD_SEP}%s{_FIELD_SEP}%b{_RECORD_SEP}"
     args = ["git", "log", f"--format={fmt}"]
     if since:
-        args.append(f"--since={since}")
+        args.append(f"--since={_normalize_since(since)}")
     result = subprocess.run(
         args,
         cwd=repo_path,

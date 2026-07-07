@@ -157,6 +157,29 @@ async def test_import_since_filters_older_commits(repo: Path, store: SQLiteStore
     assert "fix: close the socket leak" not in contents
 
 
+async def test_import_since_bare_date_means_midnight_not_current_time(
+    store: SQLiteStore, config: Config, tmp_path: Path
+):
+    """RC-gate CI failure (empirical): git's own `--since=YYYY-MM-DD` parses
+    a bare date as that date AT THE CURRENT WALL-CLOCK TIME, not midnight -
+    confirmed by reproducing locally with TZ=UTC. A commit made one second
+    after midnight on the cutoff date must always be included regardless
+    of what time of day the import itself runs; the old (unfixed) behavior
+    would have excluded it unless the import happened to run before 00:00:01."""
+    r = tmp_path / "repo_since_midnight"
+    r.mkdir()
+    _git(r, "init", "-q", "-b", "main")
+    _git(r, "config", "user.name", "Test User")
+    _git(r, "config", "user.email", "test@example.com")
+    (r / "a.txt").write_text("1")
+    _git(r, "add", "a.txt")
+    _git(r, "commit", "-q", "-m", "fix: just after midnight", date="2026-01-02T00:00:01")
+
+    result = await import_git_repo(store, r, config=config, since="2026-01-02")
+
+    assert result["imported"] == 1
+
+
 async def test_import_skips_merge_commits(store: SQLiteStore, config: Config, tmp_path: Path):
     r = tmp_path / "repo_with_merge"
     r.mkdir()
