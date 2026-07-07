@@ -269,9 +269,29 @@ Half-lives are calibrated against the real access tail of a production experienc
 
 ## Benchmarks
 
-Kairn scores **56.2% overall on LongMemEval-S** (500 questions, GPT-4o reader
-+ judge), with a published per-category breakdown and reproduction protocol in
-[BENCHMARKS.md](BENCHMARKS.md). Recall latency is ~1.4 ms per query.
+Kairn scores **56.2% overall on LongMemEval-S** (500/500 questions scored,
+GPT-4o reader + judge, single run, 0 errors). These are the real per-category
+numbers, including the bad ones - each red cell links to its diagnosis:
+
+| Category | n | Accuracy | Diagnosis |
+|----------|----|----------|-----------|
+| single-session-user | 70 | 91.4% | - |
+| single-session-assistant | 56 | 83.9% | - |
+| knowledge-update | 78 | 70.5% | - |
+| temporal-reasoning | 133 | 42.9% | [why](BENCHMARKS.md#temporal-reasoning-429) |
+| multi-session | 133 | 41.4% | [why](BENCHMARKS.md#multi-session-414) |
+| single-session-preference | 30 | 10.0% | [why](BENCHMARKS.md#single-session-preference-100) |
+
+The 500 questions include 30 abstention variants (the right answer is to
+decline); they are counted inside their categories above and scored
+separately: Kairn declines correctly on **96.7%** of them.
+
+Recall latency is ~1.4 ms per query (FTS5, in-process, no network). Protocol,
+honesty notes, and reproduction steps: [BENCHMARKS.md](BENCHMARKS.md).
+
+This scorecard stays current: every release that touches recall re-publishes
+these numbers, and a weak cell stays on the board until the number actually
+moves. No cherry-picked runs, no hidden categories.
 
 ## CLI
 
@@ -280,7 +300,7 @@ kairn init <path>              # Initialize workspace
 kairn serve <path>             # Start MCP server (stdio)
 kairn status <path>            # Graph stats
 kairn demo <path>              # Interactive tutorial
-kairn benchmark <path>         # Performance benchmarks
+kairn benchmark <path>         # Local performance benchmarks (latency, not LongMemEval)
 kairn token-audit <path>       # Audit tool token usage
 ```
 

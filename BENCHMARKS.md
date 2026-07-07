@@ -34,14 +34,71 @@ and one-shot preferences. This is the roadmap, in data:
 | temporal-reasoning | 133 | 42.9% |
 | multi-session | 133 | 41.4% |
 | single-session-preference | 30 | 10.0% |
-| abstention | 30 | 96.7% |
+
+The six categories sum to the full 500. Thirty of those questions are
+abstention variants (`question_id` ending `_abs`, where the right answer is
+to decline); they are counted inside their categories above and scored
+separately as an overlay: **96.7%**.
 
 Read it as: Kairn reliably finds a fact stated once in a session (91%) and
 reliably declines to answer when the fact was never stated (97%). It loses
 ground when an answer must be assembled across many sessions or resolved on a
-timeline. Those weak categories are the largest, so they set the ceiling, and
-they are where the next architectural work goes (entity-centric linking and
-bi-temporal validity).
+timeline. Those weak categories are the largest, so they set the ceiling.
+Each red cell has a diagnosis below; the numbers stay published while the
+diagnoses are worked.
+
+### Temporal reasoning: 42.9%
+
+Kairn surfaces the right sessions but does not reason over a timeline. A
+day-granularity bug in the flag-gated bi-temporal path (as-of filtering
+compared full ISO timestamps where the dataset speaks in days) was found and
+fixed (PR #8); that alone does not move this cell, because the shipped recall
+path does not yet use validity windows at query time. The open lever is a
+timeline-aware query path; until that ships, 42.9% is the honest number.
+
+### Multi-session: 41.4%
+
+Assembling one answer from evidence spread across many sessions. A
+density-preserving entity diversification for the flag-gated bi-temporal path
+was built and measured head-to-head (PR #9). On retrieval metrics it
+Pareto-dominates the legacy diversifier (coverage 0.797 / match-density 3.333
+vs 0.811 / 2.600 legacy, against the 0.737 / 4.533 engine baseline), but it
+FAILED the accuracy gate on a 50-question pilot: multi-session 0.3846 vs
+0.4615 baseline (n=13, exactly one question worse). It therefore shipped
+library-only - the production recall path is byte-identical - and this cell
+is published unchanged. Two negative results worth keeping: any answer-blind
+promoter saturated near 0.82 session coverage at top-k 8, and scored
+promotion did worse than plain BM25-greedy selection. The remaining gap looks
+like a reading/synthesis problem, not pure retrieval.
+
+### Single-session preference: 10.0%
+
+The worst cell on the board, published rather than gamed, because its
+mechanism is fully diagnosed and sits outside storage. Two independent
+blocks:
+
+1. **Reader abstention.** Preference questions are recommendation-shaped
+   ("suggest resources for..."). The benchmark reader answers only from
+   recalled excerpts and abstains otherwise; a recommendation must be
+   generated and is never verbatim in memory, so the reader abstains before
+   memory quality even matters. Probe: three preference questions were given
+   a manually written, ideal explicit preference statement as the top memory,
+   the upper bound of anything a storage system could produce, and the reader
+   still abstained on 3 of 3 (`runs/diag/writetime-synthesis-probe.json` in
+   the harness tree).
+2. **Entailment mismatch.** The gold answers for this category are
+   meta-descriptions of the preference. On the rare non-abstaining path, a
+   good recommendation that merely applies the preference does not entail the
+   meta-description text, so the judge scores it wrong: a preference-aware
+   reader variant scored 1/8 vs 0/8 for the standard reader
+   (`runs/diag/read-ceiling-probe.json`).
+
+Recall itself is not the bottleneck - the right evidence lands in the top-8
+excerpts for 25 of 30 preference questions. Consequence: no storage-side
+change (capture, synthesis, decay, recall) can move this cell under the
+current protocol. The only real lever is re-calibrating the benchmark reader,
+which would touch every category, so the 10% stays on the board until the
+protocol changes openly rather than being quietly tuned for one cell.
 
 ## How it compares
 
@@ -73,9 +130,10 @@ prompts differ between published runs.
 
 ## Reproducing
 
-The harness lives in the [Evolving](https://github.com/primeline-ai) research
-tree and drives Kairn's public library directly (`ExperienceEngine.search`,
-the same call `kn_memories` makes). To reproduce:
+The accuracy harness is not bundled in this repo: it lives in the
+[Evolving](https://github.com/primeline-ai) research tree and drives Kairn's
+public library directly (`ExperienceEngine.search`, the same call
+`kn_memories` makes). To reproduce:
 
 1. Download the LongMemEval-S dataset from the upstream repo.
 2. For each question: ingest the haystack sessions as experiences, recall the
@@ -84,8 +142,9 @@ the same call `kn_memories` makes). To reproduce:
 3. Keep the sandbox contract: one fresh DB per question, production workspace
    untouched (verify by hashing the DB file before and after).
 
-Latency-only benchmarks (insert/query throughput at scale) are available via
-`kairn benchmark <workspace>`.
+The performance half ships with Kairn itself: `kairn benchmark <workspace>`
+measures insert, FTS5 query, and graph traversal latency at scale on your own
+machine. It does not run LongMemEval.
 
 ## Bi-Temporal Level-Up: findings (2026-06-13)
 
