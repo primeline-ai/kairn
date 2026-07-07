@@ -553,7 +553,7 @@ def create_server(db_path: str) -> FastMCP:
             }
         )
 
-    # ── Experience Memory tools (4) ──────────────────────────
+    # ── Experience Memory tools (5) ──────────────────────────
 
     @mcp.tool()
     async def kn_save(

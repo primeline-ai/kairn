@@ -469,7 +469,7 @@ def _run_json(coro_factory) -> None:
     "--type",
     "type_",
     required=True,
-    help="Experience type: decision|pattern|solution|workaround|gotcha",
+    help="Experience type: decision|pattern|solution|workaround|gotcha|preference",
 )
 @click.option("--context", default=None, help="Optional context for the learning")
 @click.option(

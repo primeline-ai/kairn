@@ -19,7 +19,7 @@ import math
 import sqlite3
 import sys
 
-TYPES = ["solution", "pattern", "decision", "workaround", "gotcha"]
+TYPES = ["solution", "pattern", "decision", "workaround", "gotcha", "preference"]
 
 
 def percentile(sorted_vals: list[float], q: float) -> float | None:
