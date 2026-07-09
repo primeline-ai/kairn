@@ -305,6 +305,7 @@ kairn demo <path>              # Interactive tutorial
 kairn benchmark <path>         # Local performance benchmarks (latency, not LongMemEval)
 kairn token-audit <path>       # Audit tool token usage
 kairn import git <path> <repo>...  # Import git commit history (zero-LLM, offline)
+kairn import claude-code <path>    # Import Claude Code session history (zero-LLM, offline)
 ```
 
 ### Importing your history
@@ -324,6 +325,38 @@ kairn import git ~/brain ~/code/proj-a ~/code/proj-b --since 2026-01-01
 
 Idempotent - re-running only imports commits that weren't already imported, so it's safe
 to run again as a repo's history grows.
+
+#### Claude Code transcripts
+
+`kairn import claude-code <workspace>` backfills your Kairn store from your existing
+Claude Code session history, also at $0 and fully offline. With no `--root` given it scans
+`~/.claude/projects` (and `~/.claude-secondary/projects` if you have a second account);
+`--root PATH` is a repeatable override. Imported experiences land in their own
+`imported-claude-code` namespace, so they stay distinct from your organic knowledge and a
+bad import is reversible.
+
+```bash
+kairn import claude-code ~/brain --dry-run              # Review exactly what would be stored
+kairn import claude-code ~/brain                        # Import (prompts once before writing)
+kairn import claude-code ~/brain --root ~/other/projects --since 2026-01-01 --yes
+```
+
+**What gets stored (coarse mode):** one experience per session - the session's title plus
+your first prompt of that session. This is deliberately a low-detail, high-precision summary
+rather than a fine-grained per-decision extraction: a zero-LLM rule-based extractor cannot
+reliably tell a captured decision from ordinary planning chatter, so `import claude-code`
+imports a clean session-level pointer instead of noisy fragments. It is not a full transcript
+archive, and it is not a one-time migration - it is idempotent and meant to be re-run as your
+history grows.
+
+**Privacy.** Every stored string is passed through a deterministic secret redactor first
+(API keys, `Authorization`/`Bearer` headers, `password=`/`token=`/`secret=` assignments,
+common vendor key shapes, private-key blocks, URL-embedded credentials). Tool outputs and
+tool-call blocks are never read, only your own prompt text. The redactor is defense in depth,
+not the only control: a real (non-dry-run) run is gated behind an explicit confirmation, and
+`--dry-run` shows you the exact post-redaction text before anything is written. Redaction is
+bounded by its rule set, so `--dry-run` review before a first real import is recommended;
+nothing ever leaves your machine.
 
 ## Configuration
 
