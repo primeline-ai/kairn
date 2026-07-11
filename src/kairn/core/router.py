@@ -47,8 +47,12 @@ class ContextRouter:
             for nid in node_ids:
                 node_scores[nid] = max(node_scores.get(nid, 0), route["confidence"])
 
-        sorted_ids = sorted(node_scores, key=lambda nid: node_scores[nid], reverse=True)[:limit]
+        sorted_ids = sorted(node_scores, key=lambda nid: node_scores[nid], reverse=True)
 
+        # Collect until `limit` LIVE nodes are found instead of slicing first:
+        # soft-deleted ids stay in route arrays deliberately (restore_node
+        # keeps them routable), but they must not starve result slots
+        # (weakness-audit rank 62).
         results = []
         for nid in sorted_ids:
             node = await self.store.get_node(nid)
@@ -59,6 +63,8 @@ class ContextRouter:
                         "confidence": node_scores[nid],
                     }
                 )
+                if len(results) >= limit:
+                    break
 
         return results
 
@@ -73,21 +79,11 @@ class ContextRouter:
         keywords = self._extract_keywords(text)
 
         for keyword in keywords:
-            existing = await self.store.get_routes([keyword])
-            if existing:
-                route = existing[0]
-                node_ids = route["node_ids"]
-                if isinstance(node_ids, str):
-                    try:
-                        node_ids = json.loads(node_ids)
-                    except (json.JSONDecodeError, TypeError):
-                        logger.warning("Corrupted node_ids in route for keyword: %s", keyword)
-                        continue
-                if node_id not in node_ids:
-                    node_ids.append(node_id)
-                    await self.store.upsert_route(keyword, node_ids, route["confidence"])
-            else:
-                await self.store.upsert_route(keyword, [node_id], 0.5)
+            # Single-statement atomic merge in the store (weakness-audit rank
+            # 14): the prior get_routes -> append -> upsert_route sequence
+            # interleaved at its await points under concurrent writers and
+            # silently dropped node_ids (last-write-wins).
+            await self.store.merge_route_node_id(keyword, node_id)
 
         await self.bus.emit(EventType.ROUTE_UPDATED, {"node_id": node_id, "keywords": keywords})
 
@@ -104,6 +100,7 @@ class ContextRouter:
                 "id": node_data["id"],
                 "name": node_data["name"],
                 "type": node_data["type"],
+                "namespace": node_data.get("namespace"),
                 "confidence": r["confidence"],
             }
             if detail != "summary":

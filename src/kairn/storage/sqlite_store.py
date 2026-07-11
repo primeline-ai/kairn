@@ -98,6 +98,10 @@ class SQLiteStore(StorageBackend):
             if self.wal_mode:
                 await self._db.execute("PRAGMA journal_mode=WAL")
             await self._db.execute("PRAGMA foreign_keys=ON")
+            # 5s busy-wait instead of an instant SQLITE_BUSY error: the CLI,
+            # MCP server and HTTP bridges can hold connections to the same
+            # workspace db concurrently (weakness-audit rank 23).
+            await self._db.execute("PRAGMA busy_timeout=5000")
 
             # Apply workspace schema
             schema_sql = _load_sql("workspace.sql")
@@ -852,7 +856,13 @@ class SQLiteStore(StorageBackend):
         row = await cursor.fetchone()
         return _row_to_dict(row) if row else None
 
-    async def update_idea(self, idea_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+    async def update_idea(
+        self,
+        idea_id: str,
+        updates: dict[str, Any],
+        *,
+        expected_status: str | None = None,
+    ) -> dict[str, Any] | None:
         existing = await self.get_idea(idea_id)
         if not existing:
             return None
@@ -869,11 +879,21 @@ class SQLiteStore(StorageBackend):
             return existing
 
         values.append(idea_id)
-        await self.db.execute(
-            f"UPDATE ideas SET {', '.join(set_clauses)} WHERE id = ?",
+        # Compare-and-set guard (weakness-audit rank 65): a status transition
+        # validated against a snapshot must only land if the row still holds
+        # that snapshot's status - otherwise two racers could each pass
+        # validation and the loser would silently overwrite the winner.
+        where = "id = ?"
+        if expected_status is not None:
+            where += " AND status = ?"
+            values.append(expected_status)
+        cursor = await self.db.execute(
+            f"UPDATE ideas SET {', '.join(set_clauses)} WHERE {where}",
             values,
         )
         await self.db.commit()
+        if expected_status is not None and cursor.rowcount == 0:
+            return None
         return await self.get_idea(idea_id)
 
     async def list_ideas(
@@ -915,6 +935,40 @@ class SQLiteStore(StorageBackend):
             (keyword, json.dumps(node_ids), confidence, json.dumps(node_ids), confidence),
         )
         await self.db.commit()
+
+    async def merge_route_node_id(
+        self, keyword: str, node_id: str, default_confidence: float = 0.5
+    ) -> None:
+        """Atomically add node_id to a keyword's route.
+
+        Single INSERT..ON CONFLICT statement so concurrent writers cannot lose
+        each other's ids the way a Python read-modify-write could
+        (weakness-audit rank 14). Membership is probed in-statement via
+        json_each, an existing row's confidence is left untouched, and
+        corrupted node_ids JSON is warned about and left as-is (mirroring the
+        router's read-path handling) rather than clobbered.
+        """
+        try:
+            await self.db.execute(
+                """INSERT INTO routes (keyword, node_ids, confidence)
+                   VALUES (?, json_array(?), ?)
+                   ON CONFLICT(keyword) DO UPDATE SET node_ids = CASE
+                       WHEN EXISTS (
+                           SELECT 1 FROM json_each(routes.node_ids)
+                           WHERE json_each.value = ?
+                       )
+                       THEN routes.node_ids
+                       ELSE json_insert(routes.node_ids, '$[#]', ?)
+                   END""",
+                (keyword, node_id, default_confidence, node_id, node_id),
+            )
+            await self.db.commit()
+        except aiosqlite.OperationalError:
+            logger.warning(
+                "Corrupted node_ids JSON in route %r; skipping merge of %s",
+                keyword,
+                node_id,
+            )
 
     async def get_routes(self, keywords: list[str]) -> list[dict[str, Any]]:
         placeholders = ",".join("?" * len(keywords))

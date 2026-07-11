@@ -289,6 +289,10 @@ class IntelligenceLayer:
                     "id": node.id,
                     "name": node.name,
                     "type": node.type,
+                    # namespace travels in every item shape so downstream
+                    # namespace-based access filters can enforce their
+                    # allowlists on this surface.
+                    "namespace": node.namespace,
                     "description": node.description,
                     "relevance": 1.0,  # Nodes are permanent, full relevance
                 }
@@ -321,6 +325,7 @@ class IntelligenceLayer:
                     "source": "experience",
                     "id": exp.id,
                     "type": exp.type,
+                    "namespace": exp.namespace,
                     "content": exp.content,
                     "confidence": exp.confidence,
                     "relevance": round(exp.relevance(at=now), 4),
@@ -371,6 +376,7 @@ class IntelligenceLayer:
                     "id": node.id,
                     "name": node.name,
                     "type": node.type,
+                    "namespace": node.namespace,
                     "description": node.description,
                     "relevance": 1.0,
                 }
@@ -401,6 +407,7 @@ class IntelligenceLayer:
                     "workspace": "default",
                     "id": exp.id,
                     "type": exp.type,
+                    "namespace": exp.namespace,
                     "content": exp.content,
                     "confidence": exp.confidence,
                     "relevance": round(exp.relevance(at=now), 4),
@@ -451,6 +458,7 @@ class IntelligenceLayer:
                 "id": node_data["id"],
                 "name": node_data["name"],
                 "type": node_data["type"],
+                "namespace": node_data.get("namespace"),
                 "confidence": r["confidence"],
             }
             if detail != "summary":
@@ -467,6 +475,7 @@ class IntelligenceLayer:
                     "id": n.id,
                     "name": n.name,
                     "type": n.type,
+                    "namespace": n.namespace,
                     "confidence": 0.5,
                 }
                 if detail != "summary":
@@ -500,6 +509,7 @@ class IntelligenceLayer:
             exp_out: dict[str, Any] = {
                 "id": e.id,
                 "type": e.type,
+                "namespace": e.namespace,
                 "content": e.content[:200] if detail == "summary" else e.content,
                 "relevance": round(e.relevance(at=now), 4),
             }

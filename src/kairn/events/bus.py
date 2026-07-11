@@ -1,4 +1,11 @@
-"""Async event bus for Kairn."""
+"""Async event bus for Kairn.
+
+Honesty note (weakness-audit rank 95): no in-tree code registers a listener
+as of v0.2 - the ~21 .emit() call sites across the engines are extension
+points, and every emission is an awaited no-op until a subscriber calls
+.on()/.on_all() (tests and external embedders do). Do not assume any side
+effect happens via events today.
+"""
 
 from __future__ import annotations
 

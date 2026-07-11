@@ -33,6 +33,11 @@ def _json(data: dict[str, Any]) -> str:
 def create_server(db_path: str) -> FastMCP:
     """Create FastMCP server: 22 tools (5 graph + kn_judge + kn_doctor + 3 project + 4 exp + 2 ideas + 6 intel including kn_learn with candidates)."""
     state: dict[str, Any] = {}
+    # _lock serializes lazy init/teardown ONLY - tool bodies run unserialized
+    # by design (weakness-audit rank 22). Correctness under concurrency is the
+    # storage layer's job (WAL + busy_timeout + single-statement atomic ops
+    # such as merge_route_node_id), not a server-wide mutex, which would
+    # serialize every read for no isolation gain.
     _lock = asyncio.Lock()
 
     @asynccontextmanager
