@@ -42,13 +42,17 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from kairn import __version__
 from kairn.config import Config
 from kairn.storage.metadata_store import MetadataStore
 from kairn.storage.sqlite_store import SQLiteStore
 
 
 @click.group()
-@click.version_option(package_name="kairn-ai")
+# Pin --version to the source-tree constant: package_name= reads the INSTALLED
+# dist metadata, which goes stale under editable installs and reported 0.1.0
+# against a 0.2.1 tree (weakness-audit rank 96).
+@click.version_option(version=__version__, prog_name="kairn")
 def main() -> None:
     """Kairn — your AI's persistent memory."""
 
@@ -188,7 +192,17 @@ def create(name: str, org: str, description: str | None, workspace_type: str) ->
 def join(workspace_id: str, token: str) -> None:
     """Join an existing workspace."""
     config = Config.load()
-    secret = os.environ.get("KAIRN_JWT_SECRET", "test-secret-key-do-not-use")
+    # Fail closed: verifying against a hardcoded fallback secret would accept
+    # any token forged with that public constant (weakness-audit rank 37 -
+    # this verify path was the twin of the create_token() write path).
+    secret = os.environ.get("KAIRN_JWT_SECRET")
+    if not secret:
+        click.echo(
+            "KAIRN_JWT_SECRET is not set; refusing to verify tokens against a "
+            "built-in fallback secret",
+            err=True,
+        )
+        sys.exit(1)
 
     async def _join() -> None:
         from kairn.auth.jwt import TokenExpiredError, TokenInvalidError, verify_token

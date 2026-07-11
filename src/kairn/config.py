@@ -8,6 +8,22 @@ from pathlib import Path
 
 import yaml
 
+_BOOL_FALSY = {"false", "0", "no", "off", ""}
+_BOOL_TRUTHY = {"true", "1", "yes", "on"}
+
+
+def _coerce_bool(value: object) -> bool:
+    """bool("false") is True - YAML string values need real parsing
+    (weakness-audit rank 61)."""
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in _BOOL_FALSY:
+        return False
+    if text in _BOOL_TRUTHY:
+        return True
+    raise ValueError(f"Cannot interpret {value!r} as a boolean config value")
+
 
 @dataclass
 class Config:
@@ -67,6 +83,8 @@ class Config:
                     expected_type = type(getattr(config, key))
                     if expected_type is Path:
                         setattr(config, key, Path(value))
+                    elif expected_type is bool:
+                        setattr(config, key, _coerce_bool(value))
                     else:
                         setattr(config, key, expected_type(value))
 

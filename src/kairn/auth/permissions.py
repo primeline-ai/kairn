@@ -1,4 +1,12 @@
-"""RBAC permission checks for Kairn workspaces."""
+"""RBAC permission checks for Kairn workspaces.
+
+STATUS (2026-07-11, weakness-audit rank 17): these checks are NOT wired into
+any execution path - no MCP tool, CLI command, or engine consults them, so
+they provide no isolation today. They are the intended vocabulary for a
+future multi-user mode, nothing more. If you wire a caller, update this
+docstring AND the tripwire test
+(tests/test_weakness_audit_wave3.py::test_rbac_unenforced_tripwire).
+"""
 
 from __future__ import annotations
 

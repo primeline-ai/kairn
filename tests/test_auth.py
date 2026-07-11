@@ -11,6 +11,16 @@ from kairn.auth.jwt import TokenExpiredError, TokenInvalidError, create_token, v
 from kairn.auth.permissions import can_admin, can_read, can_write, check_permission
 
 
+_TEST_SECRET = "unit-test-signing-secret-32-bytes!!"
+
+
+@pytest.fixture(autouse=True)
+def _jwt_secret(monkeypatch):
+    """create_token fails closed without KAIRN_JWT_SECRET (weakness-audit
+    rank 37); every JWT test signs with an explicit test secret."""
+    monkeypatch.setenv("KAIRN_JWT_SECRET", _TEST_SECRET)
+
+
 class TestJWT:
     """Test JWT token creation and validation."""
 
@@ -21,8 +31,7 @@ class TestJWT:
 
     def test_verify_token_valid(self) -> None:
         token = create_token("user-123", "org-456", exp_minutes=1)
-        secret = os.environ.get("KAIRN_JWT_SECRET", "test-secret-key-do-not-use")
-        payload = verify_token(token, secret)
+        payload = verify_token(token, _TEST_SECRET)
 
         assert payload["sub"] == "user-123"
         assert payload["org"] == "org-456"
@@ -30,8 +39,7 @@ class TestJWT:
 
     def test_verify_token_custom_expiry(self) -> None:
         token = create_token("user-789", "org-101", exp_minutes=120)
-        secret = os.environ.get("KAIRN_JWT_SECRET", "test-secret-key-do-not-use")
-        payload = verify_token(token, secret)
+        payload = verify_token(token, _TEST_SECRET)
 
         assert payload["sub"] == "user-789"
         exp_time = payload["exp"]
@@ -40,10 +48,9 @@ class TestJWT:
 
     def test_verify_token_expired(self) -> None:
         token = create_token("user-123", "org-456", exp_minutes=-1)
-        secret = os.environ.get("KAIRN_JWT_SECRET", "test-secret-key-do-not-use")
 
         with pytest.raises(TokenExpiredError):
-            verify_token(token, secret)
+            verify_token(token, _TEST_SECRET)
 
     def test_verify_token_invalid_signature(self) -> None:
         token = create_token("user-123", "org-456")

@@ -184,7 +184,14 @@ class GraphEngine:
             if current_id != node_id:
                 node = await self.get_node(current_id)
                 if node:
-                    results.append({"node": node.to_response(), "depth": current_depth})
+                    # namespace is not in the default (summary) to_response
+                    # projection; inject it so this shape matches the
+                    # recall/context/crossref items and downstream
+                    # namespace-based access filters can enforce on kn_related
+                    # too (rc-wave2b / rc-wave3 round-1 finding).
+                    node_dict = node.to_response()
+                    node_dict["namespace"] = node.namespace
+                    results.append({"node": node_dict, "depth": current_depth})
 
             if current_depth < depth:
                 edges = await self.store.get_edges(source_id=current_id, edge_type=edge_type)

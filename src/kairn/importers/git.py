@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from kairn.config import Config
+from kairn.importers.redact import redact
 from kairn.storage.base import StorageBackend
 
 IMPORT_NAMESPACE = "imported-git"
@@ -149,6 +150,7 @@ async def import_git_repo(
     skipped_merge = 0
     skipped_duplicate = 0
     collisions = 0
+    redactions = 0
     preview: list[dict[str, str]] = []
 
     for commit in commits:
@@ -160,6 +162,13 @@ async def import_git_repo(
         content = commit["subject"]
         if commit["body"]:
             content = f"{commit['subject']}\n\n{commit['body']}"
+        # Same privacy gate as the claude_code importer: commit messages
+        # routinely quote credentials ("old value was password=..."). Mask
+        # BEFORE the dry-run preview and the store insert so a secret never
+        # reaches either surface.
+        redaction_result = redact(content)
+        content = redaction_result.text
+        redactions += len(redaction_result.findings)
 
         source_ref = f"git:{repo_path}:{commit['sha']}"
         exp_id = hashlib.sha256(source_ref.encode()).hexdigest()[:16]
@@ -207,6 +216,7 @@ async def import_git_repo(
         "skipped_merge": skipped_merge,
         "skipped_duplicate": skipped_duplicate,
         "collisions": collisions,
+        "redactions": redactions,
         "dry_run": dry_run,
     }
     if dry_run:

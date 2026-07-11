@@ -21,8 +21,18 @@ class TokenInvalidError(Exception):
 
 
 def create_token(user_id: str, org_id: str, exp_minutes: int = 60) -> str:
-    """Create a JWT token for a user."""
-    secret = os.environ.get("KAIRN_JWT_SECRET", "test-secret-key-do-not-use")
+    """Create a JWT token for a user.
+
+    Fails closed: KAIRN_JWT_SECRET must be set. The previous hardcoded
+    fallback secret made every token forgeable by anyone who read the source
+    (weakness-audit rank 37).
+    """
+    secret = os.environ.get("KAIRN_JWT_SECRET")
+    if not secret:
+        raise RuntimeError(
+            "KAIRN_JWT_SECRET is not set; refusing to sign tokens with a "
+            "built-in fallback secret"
+        )
     now = int(time.time())
     payload = {
         "sub": user_id,

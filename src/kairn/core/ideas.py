@@ -146,9 +146,21 @@ class IdeaEngine:
             if getattr(current, key, None) != value:
                 changed_fields.append(key)
 
-        # Update the idea
+        # Update the idea. For a status change, pass the snapshot status as a
+        # compare-and-set guard: the transition was validated against that
+        # snapshot, so it must only land if the row still holds it - otherwise
+        # two racers could each pass validation and silently overwrite each
+        # other (weakness-audit rank 65).
         updates["updated_at"] = datetime.now(UTC)
-        await self._store.update_idea(idea_id, updates)
+        expected = current.status if "status" in updates else None
+        result = await self._store.update_idea(
+            idea_id, updates, expected_status=expected
+        )
+        if result is None and expected is not None:
+            raise ValueError(
+                f"Concurrent status change on idea {idea_id}: expected "
+                f"'{expected}' but the row moved on - re-read and retry"
+            )
 
         # Get updated idea
         updated = await self.get(idea_id)
