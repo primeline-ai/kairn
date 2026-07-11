@@ -395,6 +395,46 @@ async def test_merge_route_lock_error_propagates_but_malformed_json_is_skipped(s
 
 
 # ---------------------------------------------------------------------------
+# rc-wave3 round-2 - the namespace invariant must hold across ALL kn_* MCP
+# tools that return node/experience data (kn_query + kn_memories were the two
+# remaining holes in the same wall as kn_related)
+# ---------------------------------------------------------------------------
+
+
+async def test_kn_query_and_kn_memories_shapes_carry_namespace(tmp_path):
+    from fastmcp import Client
+
+    from kairn.server import create_server
+
+    server = create_server(str(tmp_path / "srv.db"))
+    async with Client(server) as c:
+        await c.call_tool(
+            "kn_add",
+            {"name": "nsprobe node", "type": "concept", "namespace": "private-tenant"},
+        )
+        # kn_save has no namespace param (defaults to 'knowledge'); the shape
+        # must still echo whatever namespace the experience carries.
+        await c.call_tool(
+            "kn_save",
+            {"content": "nsprobe experience", "type": "pattern"},
+        )
+
+        q = await c.call_tool("kn_query", {"text": "nsprobe"})
+        q_text = "".join(getattr(b, "text", "") for b in q.content)
+        q_data = json.loads(q_text)
+        assert q_data["nodes"], "kn_query returned no nodes for planted content"
+        for node in q_data["nodes"]:
+            assert "namespace" in node, f"kn_query node missing namespace: {sorted(node)}"
+
+        m = await c.call_tool("kn_memories", {"text": "nsprobe"})
+        m_text = "".join(getattr(b, "text", "") for b in m.content)
+        m_data = json.loads(m_text)
+        assert m_data["experiences"], "kn_memories returned nothing"
+        for exp in m_data["experiences"]:
+            assert "namespace" in exp, f"kn_memories exp missing namespace: {sorted(exp)}"
+
+
+# ---------------------------------------------------------------------------
 # rank 96 - CLI --version reports the source-tree version
 # ---------------------------------------------------------------------------
 

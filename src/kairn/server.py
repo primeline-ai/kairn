@@ -338,7 +338,15 @@ def create_server(db_path: str) -> FastMCP:
             limit=limit,
             offset=offset,
         )
-        items = [n.to_response(detail=detail) for n in nodes]
+        # namespace travels on every node/experience shape so downstream
+        # namespace-based access filters can enforce uniformly - to_response's
+        # summary projection omits it, so inject it (matches kn_related /
+        # intelligence recall/context/crossref).
+        items = []
+        for n in nodes:
+            item = n.to_response(detail=detail)
+            item.setdefault("namespace", n.namespace)
+            items.append(item)
         return _json(
             {
                 "_v": "1.0",
@@ -740,6 +748,9 @@ def create_server(db_path: str) -> FastMCP:
             {
                 "id": e.id,
                 "type": e.type,
+                # namespace on every experience shape too (uniform invariant
+                # for downstream namespace-based access filters).
+                "namespace": e.namespace,
                 "content": e.content,
                 "confidence": e.confidence,
                 "relevance": round(e.relevance(), 4),
