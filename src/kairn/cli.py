@@ -192,7 +192,17 @@ def create(name: str, org: str, description: str | None, workspace_type: str) ->
 def join(workspace_id: str, token: str) -> None:
     """Join an existing workspace."""
     config = Config.load()
-    secret = os.environ.get("KAIRN_JWT_SECRET", "test-secret-key-do-not-use")
+    # Fail closed: verifying against a hardcoded fallback secret would accept
+    # any token forged with that public constant (weakness-audit rank 37 -
+    # this verify path was the twin of the create_token() write path).
+    secret = os.environ.get("KAIRN_JWT_SECRET")
+    if not secret:
+        click.echo(
+            "KAIRN_JWT_SECRET is not set; refusing to verify tokens against a "
+            "built-in fallback secret",
+            err=True,
+        )
+        sys.exit(1)
 
     async def _join() -> None:
         from kairn.auth.jwt import TokenExpiredError, TokenInvalidError, verify_token

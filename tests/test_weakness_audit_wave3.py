@@ -306,6 +306,95 @@ async def test_idea_status_update_is_cas_guarded(engines):
 
 
 # ---------------------------------------------------------------------------
+# rc-wave3 round-1 CRITICAL - cli `join` must not verify against a hardcoded
+# fallback secret when KAIRN_JWT_SECRET is unset
+# ---------------------------------------------------------------------------
+
+
+def test_cli_join_fails_closed_without_jwt_secret(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from kairn.cli import main as cli_main
+
+    monkeypatch.delenv("KAIRN_JWT_SECRET", raising=False)
+    monkeypatch.setenv("KAIRN_WORKSPACE", str(tmp_path))
+    # A token forged with the old public constant must NOT authenticate.
+    import jwt as pyjwt
+
+    forged = pyjwt.encode(
+        {"sub": "admin", "org": "x", "exp": 9999999999},
+        "test-secret-key-do-not-use",
+        algorithm="HS256",
+    )
+    result = CliRunner().invoke(cli_main, ["workspace", "join", "ws1", "--token", forged])
+    assert result.exit_code != 0
+    assert "test-secret-key-do-not-use" not in result.output
+    # It must refuse for lack of a configured secret, not accept the forgery.
+    assert "KAIRN_JWT_SECRET" in result.output or "secret" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# rc-wave3 / rc-wave2b round-1 MEDIUM - kn_related item shape must carry
+# namespace too (the 4th kn_* tool the first pass missed)
+# ---------------------------------------------------------------------------
+
+
+async def test_get_related_items_carry_namespace(engines):
+    graph = engines["graph"]
+
+    a = await graph.add_node(name="hub node nsprobe related", type="learned_pattern")
+    b = await graph.add_node(
+        name="restricted neighbor nsprobe related",
+        type="learned_decision",
+        namespace="private-tenant",
+    )
+    await graph.connect(source_id=a.id, target_id=b.id, edge_type="related")
+
+    related = await graph.get_related(a.id, depth=1)
+    assert related, "expected the neighbor via BFS"
+    for item in related:
+        assert "namespace" in item["node"], (
+            f"kn_related node dict missing namespace: {sorted(item['node'].keys())}"
+        )
+    assert any(item["node"]["namespace"] == "private-tenant" for item in related)
+
+
+# ---------------------------------------------------------------------------
+# rc-wave3 round-1 HIGH - merge_route_node_id must not swallow a real
+# database-locked OperationalError as if it were malformed JSON
+# ---------------------------------------------------------------------------
+
+
+async def test_merge_route_lock_error_propagates_but_malformed_json_is_skipped(store):
+    import sqlite3
+
+    # Malformed JSON in a route -> logged + skipped, never crashes.
+    await store.db.execute(
+        "INSERT INTO routes (keyword, node_ids, confidence) VALUES (?, ?, ?)",
+        ("corrupt", "not-json", 0.5),
+    )
+    await store.db.commit()
+    await store.merge_route_node_id("corrupt", "node-x")  # must not raise
+
+    # A genuine 'database is locked' OperationalError must propagate, not be
+    # mislabeled as corrupted JSON and silently swallowed (the exact merge-loss
+    # the fix targets, just moved to a lock timeout).
+    orig_execute = store.db.execute
+
+    async def _locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    store.db.execute = _locked
+    try:
+        import pytest as _pytest
+
+        with _pytest.raises(sqlite3.OperationalError, match="locked"):
+            await store.merge_route_node_id("anything", "node-y")
+    finally:
+        store.db.execute = orig_execute
+
+
+# ---------------------------------------------------------------------------
 # rank 96 - CLI --version reports the source-tree version
 # ---------------------------------------------------------------------------
 

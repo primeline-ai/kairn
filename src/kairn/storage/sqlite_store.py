@@ -963,7 +963,16 @@ class SQLiteStore(StorageBackend):
                 (keyword, node_id, default_confidence, node_id, node_id),
             )
             await self.db.commit()
-        except aiosqlite.OperationalError:
+        except aiosqlite.OperationalError as e:
+            # sqlite raises OperationalError for BOTH malformed-JSON in the
+            # json_each/json_insert probe AND 'database is locked' once
+            # busy_timeout is exceeded. Only the former is a benign
+            # skip-this-route; a lock timeout must propagate, or we would
+            # silently re-lose the very merge this atomic path exists to
+            # protect (rc-wave3 round-1 HIGH). No distinct subclass exists,
+            # so discriminate on the message.
+            if "malformed json" not in str(e).lower():
+                raise
             logger.warning(
                 "Corrupted node_ids JSON in route %r; skipping merge of %s",
                 keyword,
