@@ -332,6 +332,93 @@ class TestRecall:
         results = await engine.recall(topic="completely_nonexistent_xyz123")
         assert results == []
 
+    @pytest.mark.asyncio
+    async def test_query_ranked_pairs_nodes_with_bm25_rank(
+        self, engine: IntelligenceLayer
+    ):
+        """graph.query_ranked returns (Node, rank); rank is the FTS5 bm25 score."""
+        await engine.learn(
+            content="Kafka partitions map to consumer group members",
+            type="pattern",
+            confidence="high",
+        )
+
+        ranked = await engine.graph.query_ranked(text="kafka partitions consumer")
+
+        assert len(ranked) >= 1
+        node, rank = ranked[0]
+        assert node.name
+        # FTS5 bm25: a negative score, more negative = stronger match.
+        assert isinstance(rank, float)
+        assert rank < 0
+
+    @pytest.mark.asyncio
+    async def test_recall_applies_min_relevance_to_nodes(
+        self, engine: IntelligenceLayer
+    ):
+        """A weak keyword match must be filtered when min_relevance is high.
+
+        Regression: nodes were hard-coded to relevance 1.0 and min_relevance
+        was applied only to the experience path, so the abstention gate was
+        dead for nodes - a topically-alien query still returned nodes at 1.0.
+        """
+        await engine.learn(
+            content="The deployment pipeline stores Helm chart values for each cluster",
+            type="pattern",
+            confidence="high",
+            tags=["devops"],
+        )
+
+        # Overlaps only on the weak token "values"; a strict relevance floor
+        # must exclude this node.
+        results = await engine.recall(
+            topic="quarterly revenue values by region", min_relevance=0.9
+        )
+        node_results = [r for r in results if r["source"] == "node"]
+        assert node_results == []
+
+    @pytest.mark.asyncio
+    async def test_recall_node_relevance_reflects_match_strength(
+        self, engine: IntelligenceLayer
+    ):
+        """Node relevance must reflect BM25 match strength, not a flat 1.0.
+
+        Regression: every node came back at relevance 1.0, so a strong match
+        and an incidental mention were indistinguishable and nodes always
+        outranked decaying experiences.
+        """
+        # Distractors so the corpus has meaningful IDF - bm25 degenerates on a
+        # tiny corpus where every query term appears in every document.
+        for topic in (
+            "The frontend uses React hooks for local state",
+            "CSS grid handles the dashboard layout",
+            "The CI pipeline runs on GitHub Actions",
+            "Application logging goes through structured JSON",
+            "The API gateway enforces per-tenant rate limits",
+        ):
+            await engine.learn(content=topic, type="pattern", confidence="high")
+
+        await engine.learn(
+            content="Chose Postgres over SQLite for concurrent writers in the analytics service",
+            type="decision",
+            confidence="high",
+        )
+        await engine.learn(
+            content="The Postgres backup cron mentions nothing else of note",
+            type="pattern",
+            confidence="high",
+        )
+
+        results = await engine.recall(
+            topic="Postgres SQLite concurrent writers analytics"
+        )
+        node_results = [r for r in results if r["source"] == "node"]
+        strong = next(r for r in node_results if "concurrent" in (r["description"] or ""))
+        weak = next(r for r in node_results if "backup cron" in (r["description"] or ""))
+        # Not a flat 1.0, and the strong multi-term match outranks the mention.
+        assert strong["relevance"] != 1.0
+        assert strong["relevance"] > weak["relevance"]
+
 
 # ──────────────────────────────────────────────────────────────────────
 # crossref() tests
