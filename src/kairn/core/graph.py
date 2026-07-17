@@ -100,6 +100,38 @@ class GraphEngine:
         )
         return [Node(**row) for row in rows]
 
+    async def query_ranked(
+        self,
+        *,
+        text: str | None = None,
+        namespace: str | None = None,
+        node_type: str | None = None,
+        tags: list[str] | None = None,
+        visibility: str | None = None,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> list[tuple[Node, float | None]]:
+        """Like `query`, but pair each node with its raw FTS5 bm25 `rank`.
+
+        `rank` is None for non-text queries (no MATCH, so no bm25 score).
+        Callers that need match strength - recall ranking and the abstention
+        gate - use this; `query` stays a plain Node list for everyone else.
+        """
+        rows = await self.store.query_nodes(
+            namespace=namespace,
+            node_type=node_type,
+            tags=tags,
+            text=text,
+            visibility=visibility,
+            limit=limit,
+            offset=offset,
+        )
+        ranked: list[tuple[Node, float | None]] = []
+        for row in rows:
+            rank = row.pop("rank", None)
+            ranked.append((Node(**row), rank))
+        return ranked
+
     async def connect(
         self,
         source_id: str,

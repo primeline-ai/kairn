@@ -35,6 +35,26 @@ logger = logging.getLogger(__name__)
 _CANDIDATES_LIMIT = 5
 _CANDIDATE_SNIPPET_CHARS = 160
 
+# bm25 score at which node relevance = 0.5. Larger => the same bm25 match maps
+# to a lower relevance, so weak keyword overlaps fall under a strict
+# min_relevance floor while strong multi-term matches clear it.
+_BM25_RELEVANCE_MIDPOINT = 5.0
+
+
+def _bm25_to_relevance(rank: float | None) -> float:
+    """Map an FTS5 bm25 `rank` to a bounded (0, 1] relevance.
+
+    SQLite FTS5 exposes bm25 as a negative score where a more-negative value
+    means a stronger match. A saturating transform (score / (score + K))
+    preserves the raw bm25 ordering while yielding an absolute-ish relevance
+    the min_relevance gate can act on. `rank is None` (a non-text browse query
+    with no MATCH) has no match strength to report, so it stays 1.0.
+    """
+    if rank is None:
+        return 1.0
+    score = max(0.0, -float(rank))
+    return round(score / (score + _BM25_RELEVANCE_MIDPOINT), 4)
+
 
 class IntelligenceLayer:
     """Unified intelligence operations over graph, experience, and routing."""
@@ -276,13 +296,20 @@ class IntelligenceLayer:
         results: list[dict[str, Any]] = []
         fts_query = _to_fts_query(topic) if topic else None
 
-        # Search nodes via FTS5
+        # Search nodes via FTS5, carrying the bm25 rank so node relevance
+        # reflects match strength instead of a flat 1.0 (which made the
+        # min_relevance abstention gate dead for the node path).
         if fts_query:
-            nodes = await self.graph.query(text=fts_query, limit=limit)
+            ranked = await self.graph.query_ranked(text=fts_query, limit=limit)
         else:
-            nodes = await self.graph.query(limit=limit)
+            ranked = await self.graph.query_ranked(limit=limit)
 
-        for node in nodes:
+        kept_node_ids: list[str] = []
+        for node, rank in ranked:
+            relevance = _bm25_to_relevance(rank)
+            if relevance < min_relevance:
+                continue
+            kept_node_ids.append(node.id)
             results.append(
                 {
                     "source": "node",
@@ -294,13 +321,13 @@ class IntelligenceLayer:
                     # allowlists on this surface.
                     "namespace": node.namespace,
                     "description": node.description,
-                    "relevance": 1.0,  # Nodes are permanent, full relevance
+                    "relevance": relevance,
                 }
             )
 
-        # Log node access for activity tracking
-        if nodes:
-            await self._log_node_access("node_recall", [n.id for n in nodes])
+        # Log node access for activity tracking (only nodes we surfaced).
+        if kept_node_ids:
+            await self._log_node_access("node_recall", kept_node_ids)
 
         # Search experiences (decay-aware)
         experiences = await self.experience.search(
@@ -332,10 +359,13 @@ class IntelligenceLayer:
                 }
             )
 
-        # Sort by relevance descending
-        results.sort(key=lambda r: r["relevance"], reverse=True)
-
-        # Apply limit to combined results
+        # Nodes (curated, permanent) lead, then experiences (decaying). Each
+        # group is already ranked internally - nodes by bm25 match strength
+        # (query_ranked order), experiences by the experience engine's search
+        # order. We deliberately do NOT merge-sort the union by a single
+        # "relevance" float: node bm25 match-strength and experience time-decay
+        # are different scales, and sorting them together buries curated nodes
+        # under fresh (high-decay-relevance) experiences.
         results = results[:limit]
 
         await self.event_bus.emit(
