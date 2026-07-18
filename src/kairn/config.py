@@ -38,6 +38,17 @@ class Config:
     fts5_enabled: bool = True
     wal_mode: bool = True
 
+    # Semantic recall (opt-in): a local-embedding cosine rerank over the FTS5
+    # top-N with a cosine abstain floor. Default OFF keeps the zero-dependency,
+    # air-gapped, keyword-only product identity byte-for-byte. When on, node
+    # writes embed via a LOCAL Ollama server (embedding_host) so corpus content
+    # never leaves the machine.
+    semantic_recall: bool = False
+    embedding_model: str = "bge-m3"
+    embedding_host: str = "http://localhost:11434"
+    semantic_recall_floor: float = 0.5
+    semantic_recall_top_n: int = 30
+
     # Decay half-lives (days). DEPRECATED as a source: the live decay path is
     # core/experience.py:HALF_LIVES (decay_rate_for_type below delegates to it).
     # Retained for backward compatibility, mirroring the calibrated 2026-06-13
@@ -134,6 +145,13 @@ class Config:
             "response_token_limit": self.response_token_limit,
             "fts5_enabled": self.fts5_enabled,
             "wal_mode": self.wal_mode,
+            # Semantic recall (opt-in) - round-tripped so a save() never silently
+            # reverts a user-enabled flag back to the default.
+            "semantic_recall": self.semantic_recall,
+            "embedding_model": self.embedding_model,
+            "embedding_host": self.embedding_host,
+            "semantic_recall_floor": self.semantic_recall_floor,
+            "semantic_recall_top_n": self.semantic_recall_top_n,
         }
         with open(config_file, "w") as f:
             yaml.dump(data, f, default_flow_style=False)

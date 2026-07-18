@@ -19,7 +19,13 @@ CREATE TABLE IF NOT EXISTS nodes (
     source_ref TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT,
-    deleted_at TEXT
+    deleted_at TEXT,
+    -- Optional local-embedding vector for the semantic_recall flag (migration
+    -- 006). embedding = packed little-endian float32 BLOB; embedding_model =
+    -- the producing model (recall compares only same-model vectors). Both NULL
+    -- unless semantic_recall is on; the default keyword path never touches them.
+    embedding BLOB DEFAULT NULL,
+    embedding_model TEXT DEFAULT NULL
 );
 
 -- Edges (relationships)

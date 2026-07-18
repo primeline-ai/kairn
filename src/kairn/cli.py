@@ -64,7 +64,10 @@ def init(path: str) -> None:
     workspace = Path(path).expanduser().resolve()
 
     async def _init() -> None:
-        config = Config(workspace_path=workspace)
+        # Load-then-save so re-running init on an existing workspace MERGES
+        # over the current config.yaml instead of clobbering hand-set values
+        # (e.g. semantic_recall) back to defaults.
+        config = Config.load(workspace_path=workspace)
         store = SQLiteStore(workspace / "kairn.db")
         await store.initialize()
         await store.close()
@@ -413,6 +416,8 @@ async def _build_intel_stack(db_path: Path):
     Reuses the exact wiring pattern from the demo command so MCP and CLI execute
     through the same engines.
     """
+    from kairn.config import Config
+    from kairn.core.embeddings import embedder_from_config
     from kairn.core.experience import ExperienceEngine
     from kairn.core.graph import GraphEngine
     from kairn.core.ideas import IdeaEngine
@@ -421,7 +426,9 @@ async def _build_intel_stack(db_path: Path):
     from kairn.core.router import ContextRouter
     from kairn.events.bus import EventBus
 
-    store = SQLiteStore(db_path)
+    config = Config.load(db_path.parent)
+    embedder, embedder_model = embedder_from_config(config)
+    store = SQLiteStore(db_path, embedder=embedder, embedder_model=embedder_model)
     await store.initialize()
     bus = EventBus()
     graph = GraphEngine(store, bus)
@@ -437,6 +444,11 @@ async def _build_intel_stack(db_path: Path):
         memory=memory_eng,
         experience=experience,
         ideas=ideas_eng,
+        embedder=embedder,
+        embedder_model=embedder_model,
+        semantic_recall=config.semantic_recall,
+        semantic_floor=config.semantic_recall_floor,
+        semantic_top_n=config.semantic_recall_top_n,
     )
     return store, intel
 
