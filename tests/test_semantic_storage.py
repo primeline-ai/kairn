@@ -143,3 +143,42 @@ class TestFlagOffInvariant:
         row = await plain_store.get_node("b1")
         assert row["embedding"] is None
         assert row["embedding_model"] is None
+
+
+class TestEmbedFailOpen:
+    @pytest.mark.asyncio
+    async def test_embed_error_does_not_crash_the_write(self, tmp_path):
+        """A failing embedder must not sink the node write (fail-open): the
+        node persists with a NULL vector rather than raising out of insert_node
+        and orphaning the node / duplicating it on retry."""
+
+        def boom(_texts):
+            raise RuntimeError("ollama down")
+
+        store = SQLiteStore(tmp_path / "boom.db", embedder=boom, embedder_model="fake-8")
+        await store.initialize()
+        try:
+            # Must NOT raise even though the embedder throws.
+            await store.insert_node(_node("c1", "Resilient", "write survives embed failure"))
+            row = await store.get_node("c1")
+            assert row is not None and row["name"] == "Resilient"
+            assert row["embedding"] is None
+            assert row["embedding_model"] is None
+        finally:
+            await store.close()
+
+
+class TestConfigRoundTrip:
+    def test_save_load_roundtrips_semantic_recall(self, tmp_path):
+        """save() must persist semantic_recall so a later load() (or a re-run
+        of `kairn init`) does not silently revert a user-enabled flag."""
+        from kairn.config import Config
+
+        cfg = Config(workspace_path=tmp_path)
+        cfg.semantic_recall = True
+        cfg.semantic_recall_floor = 0.42
+        cfg.save()
+
+        reloaded = Config.load(workspace_path=tmp_path)
+        assert reloaded.semantic_recall is True
+        assert reloaded.semantic_recall_floor == 0.42

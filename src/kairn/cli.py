@@ -64,7 +64,10 @@ def init(path: str) -> None:
     workspace = Path(path).expanduser().resolve()
 
     async def _init() -> None:
-        config = Config(workspace_path=workspace)
+        # Load-then-save so re-running init on an existing workspace MERGES
+        # over the current config.yaml instead of clobbering hand-set values
+        # (e.g. semantic_recall) back to defaults.
+        config = Config.load(workspace_path=workspace)
         store = SQLiteStore(workspace / "kairn.db")
         await store.initialize()
         await store.close()

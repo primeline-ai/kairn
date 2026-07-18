@@ -282,25 +282,28 @@ class SQLiteStore(StorageBackend):
         text = node_embedding_text(name, description)
         if not text:
             return
+        # The persist (UPDATE + commit) is INSIDE the guard, not just the embed
+        # call: a locked DB (busy_timeout exceeded under concurrent writers)
+        # must not propagate out of a node write. Fail-open means the node stays
+        # persisted with a NULL vector (recall falls back to keyword for it),
+        # never a crashed kn_learn that orphans the node or duplicates it on retry.
         try:
             loop = asyncio.get_running_loop()
             vectors = await loop.run_in_executor(None, self._embedder, [text])
+            if not vectors or not vectors[0]:
+                return
+            blob = pack_vector(normalize(vectors[0]))
+            await self.db.execute(
+                "UPDATE nodes SET embedding = ?, embedding_model = ? WHERE id = ?",
+                (blob, self._embedder_model, node_id),
+            )
+            await self.db.commit()
         except Exception:
             logger.warning(
                 "embed-at-write failed for node %s; leaving embedding NULL",
                 node_id,
                 exc_info=True,
             )
-            return
-        if not vectors or not vectors[0]:
-            return
-
-        blob = pack_vector(normalize(vectors[0]))
-        await self.db.execute(
-            "UPDATE nodes SET embedding = ?, embedding_model = ? WHERE id = ?",
-            (blob, self._embedder_model, node_id),
-        )
-        await self.db.commit()
 
     async def query_nodes_with_embeddings(
         self,

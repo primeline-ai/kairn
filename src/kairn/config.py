@@ -145,6 +145,13 @@ class Config:
             "response_token_limit": self.response_token_limit,
             "fts5_enabled": self.fts5_enabled,
             "wal_mode": self.wal_mode,
+            # Semantic recall (opt-in) - round-tripped so a save() never silently
+            # reverts a user-enabled flag back to the default.
+            "semantic_recall": self.semantic_recall,
+            "embedding_model": self.embedding_model,
+            "embedding_host": self.embedding_host,
+            "semantic_recall_floor": self.semantic_recall_floor,
+            "semantic_recall_top_n": self.semantic_recall_top_n,
         }
         with open(config_file, "w") as f:
             yaml.dump(data, f, default_flow_style=False)

@@ -336,7 +336,7 @@ class IntelligenceLayer:
         return out
 
     async def _semantic_node_recall(
-        self, topic: str, fts_query: str, limit: int
+        self, topic: str, fts_query: str, limit: int, min_relevance: float = 0.0
     ) -> list[dict[str, Any]]:
         """Semantic node path (semantic_recall ON): rerank the FTS5 top-N by
         local-embedding cosine and abstain below semantic_floor.
@@ -366,7 +366,7 @@ class IntelligenceLayer:
                 "semantic recall query-embed failed; falling back to keyword", exc_info=True
             )
             return await self._keyword_node_recall(
-                fts_query=fts_query, limit=limit, min_relevance=0.0
+                fts_query=fts_query, limit=limit, min_relevance=min_relevance
             )
         if not query_vectors or not query_vectors[0]:
             return []
@@ -395,9 +395,15 @@ class IntelligenceLayer:
                     scored.append((cosine(qvec, normalize(vec)), row))
 
         scored.sort(key=lambda item: item[0], reverse=True)
+        # A caller's min_relevance still tightens the node gate (it can only
+        # raise the floor, never lower it), so kn_recall(min_relevance=...)
+        # affects nodes as it does experiences instead of being silently
+        # ignored on the semantic path. Default min_relevance=0 => the cosine
+        # floor alone decides.
+        effective_floor = max(min_relevance, self.semantic_floor)
         out: list[dict[str, Any]] = []
         for score, row in scored:
-            if score < self.semantic_floor:
+            if score < effective_floor:
                 continue
             out.append(
                 self._node_result(
@@ -433,7 +439,9 @@ class IntelligenceLayer:
         # rerank the FTS5 top-N by local-embedding cosine and abstain below the
         # cosine floor. Flag OFF runs the keyword path unchanged.
         if self.semantic_recall and self.embedder is not None and fts_query and topic:
-            node_results = await self._semantic_node_recall(topic, fts_query, limit)
+            node_results = await self._semantic_node_recall(
+                topic, fts_query, limit, min_relevance
+            )
         else:
             node_results = await self._keyword_node_recall(
                 fts_query=fts_query, limit=limit, min_relevance=min_relevance

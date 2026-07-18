@@ -46,6 +46,10 @@ _EMBEDDER = _mapped_embedder(
     {
         "concurrent writers": [1.0, 0.0, 0.0],
         "backup cron": [0.0, 1.0, 0.0],
+        # A partial-overlap vector: cosine ~0.707 with a [1,0,0] query - above
+        # the 0.5 floor but below a 0.9 min_relevance, so it exercises the
+        # min_relevance-tightens-the-node-gate path.
+        "partialvec": [0.7, 0.7, 0.0],
     },
     default=[0.0, 0.0, 1.0],
 )
@@ -130,5 +134,35 @@ class TestSemanticRerank:
             descs = " ".join(n["description"] or "" for n in nodes)
             assert "concurrent writers" in descs
             assert "backup cron" not in descs
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_min_relevance_tightens_the_semantic_node_gate(self, tmp_path):
+        """A caller's min_relevance must still tighten node results on the
+        semantic path (it can only raise the effective floor), instead of being
+        silently ignored the way it was before."""
+        store, intel = await _make_intel(tmp_path, semantic_recall=True, floor=0.5)
+        try:
+            # Exact-match node (cosine 1.0) + a partial node (cosine ~0.707).
+            await intel.learn(
+                content="concurrent writers analytics service",
+                type="decision",
+                confidence="high",
+            )
+            await intel.learn(
+                content="concurrent partialvec adjacent note",
+                type="pattern",
+                confidence="high",
+            )
+            # min_relevance below both cosines: both survive the 0.5 floor.
+            loose = await intel.recall(topic="concurrent writers", min_relevance=0.0)
+            loose_nodes = [r for r in loose if r["source"] == "node"]
+            assert any("partialvec" in (n["description"] or "") for n in loose_nodes)
+            # min_relevance 0.9 (> 0.707) drops the partial node, keeps the exact one.
+            strict = await intel.recall(topic="concurrent writers", min_relevance=0.9)
+            strict_nodes = [r for r in strict if r["source"] == "node"]
+            assert strict_nodes, "the 1.0-cosine node must survive"
+            assert all("partialvec" not in (n["description"] or "") for n in strict_nodes)
         finally:
             await store.close()
