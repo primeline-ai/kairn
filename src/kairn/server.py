@@ -16,10 +16,10 @@ from pydantic import Field
 from kairn.core.experience import ExperienceEngine
 from kairn.core.graph import GraphEngine
 from kairn.core.ideas import IdeaEngine
-from kairn.diagnostic import CHECK_REGISTRY, run_checks
 from kairn.core.intelligence import IntelligenceLayer
 from kairn.core.memory import ProjectMemory
 from kairn.core.router import ContextRouter
+from kairn.diagnostic import run_checks
 from kairn.events.bus import EventBus
 from kairn.storage.sqlite_store import SQLiteStore
 
@@ -77,8 +77,15 @@ def create_server(db_path: str) -> FastMCP:
             if "graph" not in state:
                 from pathlib import Path
 
+                from kairn.config import Config
+                from kairn.core.embeddings import embedder_from_config
+
+                config = Config.load(Path(db_path).parent)
+                embedder, embedder_model = embedder_from_config(config)
                 try:
-                    store = SQLiteStore(Path(db_path))
+                    store = SQLiteStore(
+                        Path(db_path), embedder=embedder, embedder_model=embedder_model
+                    )
                     await store.initialize()
                 except Exception as e:
                     state["init_failed"] = True
@@ -105,6 +112,11 @@ def create_server(db_path: str) -> FastMCP:
                     memory=memory,
                     experience=experience,
                     ideas=ideas,
+                    embedder=embedder,
+                    embedder_model=embedder_model,
+                    semantic_recall=config.semantic_recall,
+                    semantic_floor=config.semantic_recall_floor,
+                    semantic_top_n=config.semantic_recall_top_n,
                 )
         return state
 

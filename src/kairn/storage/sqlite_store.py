@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -83,10 +85,23 @@ def _validate_update_keys(table: str, updates: dict[str, Any]) -> dict[str, Any]
 class SQLiteStore(StorageBackend):
     """SQLite-based storage with FTS5 full-text search and WAL mode."""
 
-    def __init__(self, db_path: Path, *, wal_mode: bool = True) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        wal_mode: bool = True,
+        embedder: Callable[[list[str]], list[list[float]]] | None = None,
+        embedder_model: str | None = None,
+    ) -> None:
         self.db_path = db_path
         self.wal_mode = wal_mode
         self._db: aiosqlite.Connection | None = None
+        # Optional local-embedding support for the semantic_recall flag. When
+        # set (flag ON), node writes carry an embed-at-write side effect and
+        # the vector is stamped with embedder_model. None (flag OFF) => this
+        # store behaves byte-identically to the keyword-only product.
+        self._embedder = embedder
+        self._embedder_model = embedder_model
 
     async def initialize(self) -> None:
         """Create database, apply schema and triggers."""
@@ -202,6 +217,26 @@ class SQLiteStore(StorageBackend):
             "ON experiences(entity_key)"
         )
 
+        # Migration 006: node embedding vector for the optional semantic_recall
+        # path (added 2026-07-18). Additive, nullable, DEFAULT NULL - safe on
+        # the FTS-backed nodes table (ALTER ADD COLUMN leaves nodes_fts
+        # untouched) and downgrade-safe (older engram simply ignores the
+        # columns). embedding = packed little-endian float32 BLOB;
+        # embedding_model = the model that produced it, so recall never
+        # compares vectors across incompatible embedding spaces. Flag OFF never
+        # reads or writes these; a bad migration cannot corrupt a live store
+        # because no existing column is read or rewritten (plan risk R5).
+        cursor = await self._db.execute("PRAGMA table_info(nodes)")
+        node_columns = {row[1] for row in await cursor.fetchall()}
+        if "embedding" not in node_columns:
+            logger.info("Migrating nodes: adding embedding column")
+            await self._db.execute("ALTER TABLE nodes ADD COLUMN embedding BLOB DEFAULT NULL")
+        if "embedding_model" not in node_columns:
+            logger.info("Migrating nodes: adding embedding_model column")
+            await self._db.execute(
+                "ALTER TABLE nodes ADD COLUMN embedding_model TEXT DEFAULT NULL"
+            )
+
     async def close(self) -> None:
         if self._db:
             await self._db.close()
@@ -226,7 +261,61 @@ class SQLiteStore(StorageBackend):
             _serialize_json_fields(node, ["properties", "tags"]),
         )
         await self.db.commit()
+        await self._maybe_embed_node(node["id"], node.get("name"), node.get("description"))
         return node
+
+    async def _maybe_embed_node(
+        self, node_id: str, name: str | None, description: str | None
+    ) -> None:
+        """Persist a node's embedding vector when semantic_recall is on.
+
+        No-op with no embedder (flag OFF) so the default path never embeds.
+        Fail-open: an embed error logs and leaves the vector NULL - recall
+        falls back to keyword-only for that node and a write never crashes.
+        The blocking HTTP embed runs in an executor so it does not stall the
+        event loop.
+        """
+        if self._embedder is None:
+            return
+        from kairn.core.embeddings import node_embedding_text, normalize, pack_vector
+
+        text = node_embedding_text(name, description)
+        if not text:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            vectors = await loop.run_in_executor(None, self._embedder, [text])
+        except Exception:
+            logger.warning(
+                "embed-at-write failed for node %s; leaving embedding NULL",
+                node_id,
+                exc_info=True,
+            )
+            return
+        if not vectors or not vectors[0]:
+            return
+
+        blob = pack_vector(normalize(vectors[0]))
+        await self.db.execute(
+            "UPDATE nodes SET embedding = ?, embedding_model = ? WHERE id = ?",
+            (blob, self._embedder_model, node_id),
+        )
+        await self.db.commit()
+
+    async def query_nodes_with_embeddings(
+        self,
+        *,
+        text: str,
+        limit: int = 30,
+        namespace: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """FTS5 top-N node candidates carrying their stored embedding + model
+        (and bm25 rank), for the semantic_recall cosine rerank. Text-required:
+        a rerank needs a query. Rows without a stored vector carry
+        embedding=None and are embedded on the fly by the caller."""
+        if not text:
+            return []
+        return await self._query_nodes_fts(text, namespace=namespace, limit=limit)
 
     async def get_node(self, node_id: str) -> dict[str, Any] | None:
         cursor = await self.db.execute(
@@ -257,7 +346,15 @@ class SQLiteStore(StorageBackend):
             values,
         )
         await self.db.commit()
-        return await self.get_node(node_id)
+        refreshed = await self.get_node(node_id)
+        # Re-embed when the embedded text (name/description) changed, so a
+        # stored vector never silently drifts out of sync with the node's text.
+        if refreshed is not None and ("name" in updates or "description" in updates):
+            await self._maybe_embed_node(
+                node_id, refreshed.get("name"), refreshed.get("description")
+            )
+            refreshed = await self.get_node(node_id)
+        return refreshed
 
     async def soft_delete_node(self, node_id: str) -> bool:
         cursor = await self.db.execute(

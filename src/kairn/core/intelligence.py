@@ -5,9 +5,11 @@ Bridges graph, experience, and router engines into unified knowledge operations.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -69,6 +71,11 @@ class IntelligenceLayer:
         memory: ProjectMemory,
         experience: ExperienceEngine,
         ideas: IdeaEngine,
+        embedder: Callable[[list[str]], list[list[float]]] | None = None,
+        embedder_model: str | None = None,
+        semantic_recall: bool = False,
+        semantic_floor: float = 0.5,
+        semantic_top_n: int = 30,
     ) -> None:
         self.store = store
         self.event_bus = event_bus
@@ -77,6 +84,14 @@ class IntelligenceLayer:
         self.memory = memory
         self.experience = experience
         self.ideas = ideas
+        # Optional semantic_recall (opt-in flag, default OFF). When on, recall's
+        # node path reranks the FTS5 top-N by local-embedding cosine and abstains
+        # below semantic_floor. All-None/False => the keyword path runs unchanged.
+        self.embedder = embedder
+        self.embedder_model = embedder_model
+        self.semantic_recall = semantic_recall
+        self.semantic_floor = semantic_floor
+        self.semantic_top_n = semantic_top_n
 
     async def _log_node_access(
         self, activity_type: str, node_ids: list[str]
@@ -281,6 +296,123 @@ class IntelligenceLayer:
                 break
         return candidates
 
+    def _node_result(self, *, node_id, name, type_, namespace, description, relevance):
+        # namespace travels in every item shape so downstream namespace-based
+        # access filters can enforce their allowlists on this surface.
+        return {
+            "source": "node",
+            "id": node_id,
+            "name": name,
+            "type": type_,
+            "namespace": namespace,
+            "description": description,
+            "relevance": relevance,
+        }
+
+    async def _keyword_node_recall(
+        self, *, fts_query: str | None, limit: int, min_relevance: float
+    ) -> list[dict[str, Any]]:
+        """Keyword node path: FTS5 bm25 relevance, min_relevance gate. This is
+        the default recall for nodes (semantic_recall OFF)."""
+        if fts_query:
+            ranked = await self.graph.query_ranked(text=fts_query, limit=limit)
+        else:
+            ranked = await self.graph.query_ranked(limit=limit)
+        out: list[dict[str, Any]] = []
+        for node, rank in ranked:
+            relevance = _bm25_to_relevance(rank)
+            if relevance < min_relevance:
+                continue
+            out.append(
+                self._node_result(
+                    node_id=node.id,
+                    name=node.name,
+                    type_=node.type,
+                    namespace=node.namespace,
+                    description=node.description,
+                    relevance=relevance,
+                )
+            )
+        return out
+
+    async def _semantic_node_recall(
+        self, topic: str, fts_query: str, limit: int
+    ) -> list[dict[str, Any]]:
+        """Semantic node path (semantic_recall ON): rerank the FTS5 top-N by
+        local-embedding cosine and abstain below semantic_floor.
+
+        Uses each candidate's stored vector when its model matches the live
+        embedder; embeds any missing/stale candidate on the fly (correctness
+        over speed - works before a backfill). Fail-open: any embedding error
+        falls back to the keyword node path so recall never crashes and never
+        silently returns nothing because of an embedder outage."""
+        from kairn.core.embeddings import (
+            cosine,
+            node_embedding_text,
+            normalize,
+            unpack_vector,
+        )
+
+        candidates = await self.store.query_nodes_with_embeddings(
+            text=fts_query, limit=self.semantic_top_n
+        )
+        if not candidates:
+            return []
+        loop = asyncio.get_running_loop()
+        try:
+            query_vectors = await loop.run_in_executor(None, self.embedder, [topic])
+        except Exception:
+            logger.warning(
+                "semantic recall query-embed failed; falling back to keyword", exc_info=True
+            )
+            return await self._keyword_node_recall(
+                fts_query=fts_query, limit=limit, min_relevance=0.0
+            )
+        if not query_vectors or not query_vectors[0]:
+            return []
+        qvec = normalize(query_vectors[0])
+
+        scored: list[tuple[float, dict[str, Any]]] = []
+        missing: list[dict[str, Any]] = []
+        for row in candidates:
+            blob = row.get("embedding")
+            if blob and row.get("embedding_model") == self.embedder_model:
+                scored.append((cosine(qvec, unpack_vector(blob)), row))
+            else:
+                missing.append(row)
+        if missing:
+            texts = [
+                node_embedding_text(row.get("name"), row.get("description"))
+                for row in missing
+            ]
+            try:
+                fresh = await loop.run_in_executor(None, self.embedder, texts)
+            except Exception:
+                logger.warning("semantic recall candidate-embed failed", exc_info=True)
+                fresh = []
+            for row, vec in zip(missing, fresh, strict=False):
+                if vec:
+                    scored.append((cosine(qvec, normalize(vec)), row))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        out: list[dict[str, Any]] = []
+        for score, row in scored:
+            if score < self.semantic_floor:
+                continue
+            out.append(
+                self._node_result(
+                    node_id=row["id"],
+                    name=row["name"],
+                    type_=row["type"],
+                    namespace=row["namespace"],
+                    description=row.get("description"),
+                    relevance=round(score, 4),
+                )
+            )
+            if len(out) >= limit:
+                break
+        return out
+
     async def recall(
         self,
         *,
@@ -296,34 +428,18 @@ class IntelligenceLayer:
         results: list[dict[str, Any]] = []
         fts_query = _to_fts_query(topic) if topic else None
 
-        # Search nodes via FTS5, carrying the bm25 rank so node relevance
-        # reflects match strength instead of a flat 1.0 (which made the
-        # min_relevance abstention gate dead for the node path).
-        if fts_query:
-            ranked = await self.graph.query_ranked(text=fts_query, limit=limit)
+        # Node path. Default = keyword (honest bm25 relevance + min_relevance
+        # gate). With the opt-in semantic_recall flag on AND a query present,
+        # rerank the FTS5 top-N by local-embedding cosine and abstain below the
+        # cosine floor. Flag OFF runs the keyword path unchanged.
+        if self.semantic_recall and self.embedder is not None and fts_query and topic:
+            node_results = await self._semantic_node_recall(topic, fts_query, limit)
         else:
-            ranked = await self.graph.query_ranked(limit=limit)
-
-        kept_node_ids: list[str] = []
-        for node, rank in ranked:
-            relevance = _bm25_to_relevance(rank)
-            if relevance < min_relevance:
-                continue
-            kept_node_ids.append(node.id)
-            results.append(
-                {
-                    "source": "node",
-                    "id": node.id,
-                    "name": node.name,
-                    "type": node.type,
-                    # namespace travels in every item shape so downstream
-                    # namespace-based access filters can enforce their
-                    # allowlists on this surface.
-                    "namespace": node.namespace,
-                    "description": node.description,
-                    "relevance": relevance,
-                }
+            node_results = await self._keyword_node_recall(
+                fts_query=fts_query, limit=limit, min_relevance=min_relevance
             )
+        results.extend(node_results)
+        kept_node_ids = [r["id"] for r in node_results]
 
         # Log node access for activity tracking (only nodes we surfaced).
         if kept_node_ids:

@@ -38,6 +38,17 @@ class Config:
     fts5_enabled: bool = True
     wal_mode: bool = True
 
+    # Semantic recall (opt-in): a local-embedding cosine rerank over the FTS5
+    # top-N with a cosine abstain floor. Default OFF keeps the zero-dependency,
+    # air-gapped, keyword-only product identity byte-for-byte. When on, node
+    # writes embed via a LOCAL Ollama server (embedding_host) so corpus content
+    # never leaves the machine.
+    semantic_recall: bool = False
+    embedding_model: str = "bge-m3"
+    embedding_host: str = "http://localhost:11434"
+    semantic_recall_floor: float = 0.5
+    semantic_recall_top_n: int = 30
+
     # Decay half-lives (days). DEPRECATED as a source: the live decay path is
     # core/experience.py:HALF_LIVES (decay_rate_for_type below delegates to it).
     # Retained for backward compatibility, mirroring the calibrated 2026-06-13
