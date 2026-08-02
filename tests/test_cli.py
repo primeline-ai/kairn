@@ -975,12 +975,17 @@ class TestTildeExpansion:
         fake_home = tmp_path / "fake-home"
         fake_home.mkdir()
         # HOME alone fakes the home directory on POSIX only. ntpath.expanduser
-        # never reads HOME - it checks USERPROFILE, then HOMEDRIVE+HOMEPATH,
-        # and if none are set it returns the path UNEXPANDED. So on Windows
-        # this test left "~" literal, `kairn init` created a directory actually
-        # named "~", exited 0, and the assert below looked in an empty
-        # fake_home. Set both, and drop HOMEDRIVE/HOMEPATH so an inherited pair
-        # cannot resolve somewhere else.
+        # has not read HOME since Python 3.8 (bpo-36264, removed because MSYS /
+        # Git Bash set a bogus HOME and broke expansion for native apps). It
+        # reads USERPROFILE, then HOMEDRIVE+HOMEPATH.
+        #
+        # So on Windows this test did NOT leave "~" literal - it inherited the
+        # runner's real USERPROFILE and expanded there, creating the workspace
+        # under the actual home directory while the assert below looked in an
+        # empty fake_home. Overriding USERPROFILE is the real control surface;
+        # it also stops the test writing into the user's home. HOME stays for
+        # POSIX. HOMEDRIVE/HOMEPATH are dropped for consistency only - with
+        # USERPROFILE set they are never consulted.
         env = {**os.environ, "HOME": str(fake_home), "USERPROFILE": str(fake_home)}
         env.pop("HOMEDRIVE", None)
         env.pop("HOMEPATH", None)
