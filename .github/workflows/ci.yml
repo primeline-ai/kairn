@@ -7,7 +7,14 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Three operating systems on purpose. kairn is published to PyPI and gets
+    # installed by strangers on machines we do not own; an ubuntu-only matrix
+    # certifies exactly one of them. This suite is filesystem-heavy - tempdirs,
+    # SQLite, and a CLI shelled out via subprocess - which is precisely where
+    # platforms diverge: macOS puts the tempdir under /var/folders/..., never
+    # /tmp, and Windows shares neither that path shape nor POSIX file locking.
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
     # The full suite finishes in ~25s and exits on its own; a hang at
     # interpreter shutdown (leaked non-daemon thread) is a regression this
     # timeout is meant to catch, not accommodate.
@@ -15,6 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4

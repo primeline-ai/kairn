@@ -969,12 +969,26 @@ class TestReplicationOutputShape:
 class TestTildeExpansion:
     def test_init_and_status_resolve_literal_tilde_path(self, tmp_path: Path):
         """A literal, un-expanded '~/...' argument (as an MCP client would
-        pass it, with no shell in between) must resolve against HOME and
-        work end-to-end, not fail Click's own path validation.
+        pass it, with no shell in between) must resolve against the user's
+        home and work end-to-end, not fail Click's own path validation.
         """
         fake_home = tmp_path / "fake-home"
         fake_home.mkdir()
-        env = {**os.environ, "HOME": str(fake_home)}
+        # HOME alone fakes the home directory on POSIX only. ntpath.expanduser
+        # has not read HOME since Python 3.8 (bpo-36264, removed because MSYS /
+        # Git Bash set a bogus HOME and broke expansion for native apps). It
+        # reads USERPROFILE, then HOMEDRIVE+HOMEPATH.
+        #
+        # So on Windows this test did NOT leave "~" literal - it inherited the
+        # runner's real USERPROFILE and expanded there, creating the workspace
+        # under the actual home directory while the assert below looked in an
+        # empty fake_home. Overriding USERPROFILE is the real control surface;
+        # it also stops the test writing into the user's home. HOME stays for
+        # POSIX. HOMEDRIVE/HOMEPATH are dropped for consistency only - with
+        # USERPROFILE set they are never consulted.
+        env = {**os.environ, "HOME": str(fake_home), "USERPROFILE": str(fake_home)}
+        env.pop("HOMEDRIVE", None)
+        env.pop("HOMEPATH", None)
 
         rc, out, err = _run_kairn("init", "~/tilde-brain", env=env)
         assert rc == 0, f"init with literal tilde path failed: {err}"
