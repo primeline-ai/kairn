@@ -969,12 +969,21 @@ class TestReplicationOutputShape:
 class TestTildeExpansion:
     def test_init_and_status_resolve_literal_tilde_path(self, tmp_path: Path):
         """A literal, un-expanded '~/...' argument (as an MCP client would
-        pass it, with no shell in between) must resolve against HOME and
-        work end-to-end, not fail Click's own path validation.
+        pass it, with no shell in between) must resolve against the user's
+        home and work end-to-end, not fail Click's own path validation.
         """
         fake_home = tmp_path / "fake-home"
         fake_home.mkdir()
-        env = {**os.environ, "HOME": str(fake_home)}
+        # HOME alone fakes the home directory on POSIX only. ntpath.expanduser
+        # never reads HOME - it checks USERPROFILE, then HOMEDRIVE+HOMEPATH,
+        # and if none are set it returns the path UNEXPANDED. So on Windows
+        # this test left "~" literal, `kairn init` created a directory actually
+        # named "~", exited 0, and the assert below looked in an empty
+        # fake_home. Set both, and drop HOMEDRIVE/HOMEPATH so an inherited pair
+        # cannot resolve somewhere else.
+        env = {**os.environ, "HOME": str(fake_home), "USERPROFILE": str(fake_home)}
+        env.pop("HOMEDRIVE", None)
+        env.pop("HOMEPATH", None)
 
         rc, out, err = _run_kairn("init", "~/tilde-brain", env=env)
         assert rc == 0, f"init with literal tilde path failed: {err}"
