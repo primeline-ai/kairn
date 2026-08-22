@@ -122,3 +122,27 @@ def to_fts_query(text: str) -> str | None:
 # benchmark harness) import the underscore name from core.intelligence; that
 # re-export now resolves here.
 _to_fts_query = to_fts_query
+
+
+# bm25 score at which relevance = 0.5. Larger => the same bm25 match maps to a
+# lower relevance, so weak keyword overlaps fall under a strict min_relevance
+# floor while strong multi-term matches clear it.
+BM25_RELEVANCE_MIDPOINT = 5.0
+
+
+def bm25_to_relevance(rank: float | None) -> float:
+    """Map an FTS5 bm25 `rank` to a bounded (0, 1] relevance.
+
+    SQLite FTS5 exposes bm25 as a negative score where a more-negative value
+    means a stronger match. A saturating transform (score / (score + K))
+    preserves the raw bm25 ordering while yielding an absolute-ish relevance a
+    min_relevance gate can act on. `rank is None` (a browse query with no
+    MATCH) has no match strength to report, so it stays 1.0.
+
+    Lives here rather than in `intelligence` because BOTH the node path and the
+    experience path need it, and `intelligence` imports `experience`.
+    """
+    if rank is None:
+        return 1.0
+    score = max(0.0, -float(rank))
+    return round(score / (score + BM25_RELEVANCE_MIDPOINT), 4)

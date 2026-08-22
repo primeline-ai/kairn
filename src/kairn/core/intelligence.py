@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from kairn.core.experience import ExperienceEngine
-from kairn.core.fts import _to_fts_query  # used here + re-exported for back-compat
+from kairn.core.fts import BM25_RELEVANCE_MIDPOINT, _to_fts_query, bm25_to_relevance  # used here + re-exported for back-compat
 from kairn.core.graph import GraphEngine
 from kairn.core.ideas import IdeaEngine
 from kairn.core.memory import ProjectMemory
@@ -37,25 +37,27 @@ logger = logging.getLogger(__name__)
 _CANDIDATES_LIMIT = 5
 _CANDIDATE_SNIPPET_CHARS = 160
 
-# bm25 score at which node relevance = 0.5. Larger => the same bm25 match maps
-# to a lower relevance, so weak keyword overlaps fall under a strict
-# min_relevance floor while strong multi-term matches clear it.
-_BM25_RELEVANCE_MIDPOINT = 5.0
+# Both live in core.fts: the experience path needs the same transform, and
+# `intelligence` imports `experience`, so the shared helper cannot live here.
+_BM25_RELEVANCE_MIDPOINT = BM25_RELEVANCE_MIDPOINT
+_bm25_to_relevance = bm25_to_relevance
 
 
-def _bm25_to_relevance(rank: float | None) -> float:
-    """Map an FTS5 bm25 `rank` to a bounded (0, 1] relevance.
 
-    SQLite FTS5 exposes bm25 as a negative score where a more-negative value
-    means a stronger match. A saturating transform (score / (score + K))
-    preserves the raw bm25 ordering while yielding an absolute-ish relevance
-    the min_relevance gate can act on. `rank is None` (a non-text browse query
-    with no MATCH) has no match strength to report, so it stays 1.0.
+def _reported_relevance(exp: Any, now: datetime) -> float:
+    """The relevance a caller sees for an experience.
+
+    Prefers the match-aware value the recall computed (`recall_relevance`,
+    set by ExperienceEngine.search when the query had text). Falls back to
+    pure decay for browse queries and for any path that did not go through
+    that gate - so this is additive, never a behaviour change on the no-text
+    path. Reporting raw decay for a text query printed ~0.98 against alien
+    queries, which is the same fake-relevance defect the node path had.
     """
-    if rank is None:
-        return 1.0
-    score = max(0.0, -float(rank))
-    return round(score / (score + _BM25_RELEVANCE_MIDPOINT), 4)
+    reported = getattr(exp, "recall_relevance", None)
+    if reported is not None:
+        return reported
+    return round(exp.relevance(at=now), 4)
 
 
 class IntelligenceLayer:
@@ -75,6 +77,7 @@ class IntelligenceLayer:
         embedder_model: str | None = None,
         semantic_recall: bool = False,
         semantic_floor: float = 0.5,
+        experience_min_match: float = 0.0,
         semantic_top_n: int = 30,
     ) -> None:
         self.store = store
@@ -91,6 +94,10 @@ class IntelligenceLayer:
         self.embedder_model = embedder_model
         self.semantic_recall = semantic_recall
         self.semantic_floor = semantic_floor
+        # Abstention floor for the EXPERIENCE path. Default 0.0 keeps recall
+        # byte-identical; the node path can abstain while experiences still
+        # flood the result set, which is what made the semantic win invisible.
+        self.experience_min_match = experience_min_match
         self.semantic_top_n = semantic_top_n
 
     async def _log_node_access(
@@ -457,6 +464,7 @@ class IntelligenceLayer:
         experiences = await self.experience.search(
             text=fts_query,
             min_relevance=min_relevance,
+            min_match=self.experience_min_match,
             limit=limit,
         )
 
@@ -479,7 +487,7 @@ class IntelligenceLayer:
                     "namespace": exp.namespace,
                     "content": exp.content,
                     "confidence": exp.confidence,
-                    "relevance": round(exp.relevance(at=now), 4),
+                    "relevance": _reported_relevance(exp, now),
                 }
             )
 
@@ -564,7 +572,7 @@ class IntelligenceLayer:
                     "namespace": exp.namespace,
                     "content": exp.content,
                     "confidence": exp.confidence,
-                    "relevance": round(exp.relevance(at=now), 4),
+                    "relevance": _reported_relevance(exp, now),
                 }
             )
 
@@ -665,7 +673,7 @@ class IntelligenceLayer:
                 "type": e.type,
                 "namespace": e.namespace,
                 "content": e.content[:200] if detail == "summary" else e.content,
-                "relevance": round(e.relevance(at=now), 4),
+                "relevance": _reported_relevance(e, now),
             }
             if detail != "summary":
                 exp_out["confidence"] = e.confidence
