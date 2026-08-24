@@ -5,6 +5,8 @@
 
 > Context-aware knowledge engine for AI assistants.
 
+mcp-name: io.github.primeline-ai/kairn
+
 **Status: Alpha.** The API and CLI are functional and tested (see
 [Development](#development)), but interfaces may still change between
 releases. Feedback and issues welcome.
@@ -23,7 +25,27 @@ Add it to Claude Code in one line:
 claude mcp add kairn -- kairn serve ~/brain
 ```
 
+Or install it as a one-click bundle, no Python setup required:
+
+```bash
+# download kairn-0.2.1.mcpb from the latest release and open it
+open kairn-0.2.1.mcpb
+```
+
 For other clients, see [Quick Start](#quick-start) below. New to Kairn? Jump to [First 5 Minutes](#first-5-minutes).
+
+## Install routes
+
+| Route | Who it is for | Command |
+|---|---|---|
+| PyPI | anyone with Python, and every MCP client | `pip install kairn-ai` |
+| MCP Bundle (`.mcpb`) | Claude Desktop and other bundle-aware apps; no Python install needed | download from [Releases](https://github.com/primeline-ai/kairn/releases) and open it |
+| Claude Code | one line, uses the PyPI install | `claude mcp add kairn -- kairn serve ~/brain` |
+
+The bundle carries no Kairn source of its own. It declares `kairn-ai` as a
+dependency and the host resolves it with `uv`, so a bundle install and a
+`pip install` run identical code. Where the database lives is configurable when
+you install the bundle; it defaults to `~/.kairn` and never leaves your machine.
 
 ## Why Kairn?
 

@@ -49,8 +49,13 @@ def _sites() -> dict[str, str]:
     locked = re.search(r'name = "kairn-ai"\nversion = "([^"]+)"', lock)
     assert locked, "could not read the kairn-ai pin from uv.lock"
 
+    server_json = json.loads((REPO / "server.json").read_text())
+    reg_pkg = server_json["packages"][0]
+
     return {
         "root pyproject.toml": _toml_version(REPO / "pyproject.toml"),
+        "server.json": server_json["version"],
+        "server.json package": reg_pkg["version"],
         "src/kairn/__init__.py": dunder.group(1),
         "bundle uv.lock pin": locked.group(1),
         "bundle pyproject.toml": _toml_version(BUNDLE / "pyproject.toml"),
@@ -93,5 +98,38 @@ def test_every_known_site_is_actually_found():
         "bundle kairn-ai pin",
         "bundle manifest.json",
         "src/kairn/server.py FastMCP",
+        "server.json",
+        "server.json package",
     }
     assert set(_sites()) == expected
+
+
+# --- MCP registry contract ------------------------------------------------
+
+
+def test_registry_asset_url_names_the_same_version():
+    """server.json points at one exact release asset.
+
+    After a version bump the URL still resolves - to the OLD bundle - so the
+    entry would advertise a new version while shipping the previous artifact.
+    Nothing else notices, because the file downloads fine.
+    """
+    pkg = json.loads((REPO / "server.json").read_text())["packages"][0]
+    version = json.loads((REPO / "server.json").read_text())["version"]
+    assert f"/v{version}/" in pkg["identifier"], pkg["identifier"]
+    assert pkg["identifier"].endswith(f"kairn-{version}.mcpb"), pkg["identifier"]
+
+
+def test_readme_carries_the_registry_ownership_token():
+    """The PyPI validator reads this token out of the PUBLISHED README.
+
+    It has to survive into the package description, sit on its own line, and
+    name exactly the server in server.json. If someone rewrites the README
+    intro, the next PyPI release silently stops qualifying and the failure only
+    shows up at publish time.
+    """
+    name = json.loads((REPO / "server.json").read_text())["name"]
+    lines = (REPO / "README.md").read_text().splitlines()
+    assert f"mcp-name: {name}" in lines, (
+        f"README must contain a line exactly 'mcp-name: {name}'"
+    )

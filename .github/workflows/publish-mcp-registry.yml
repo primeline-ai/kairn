@@ -1,0 +1,75 @@
+name: Publish to MCP Registry
+
+# The registry namespace `io.github.primeline-ai/*` is owned by the GitHub ORG,
+# not by any one person, so an interactive `mcp-publisher login github` as an
+# individual cannot claim it. The documented alternative is to publish from a
+# GitHub Action running on that org's repository, which is what this workflow is
+# for: the OIDC token proves the org identity without a stored secret.
+#
+# Not automatic on release. A registry entry is public and hard to withdraw, and
+# the server.json it publishes names an exact release asset and its SHA256 - so
+# it must be run deliberately, after that asset exists and has been verified.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: publish server.json
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mcp-publisher
+        run: |
+          curl -sL "https://github.com/modelcontextprotocol/registry/releases/download/v${PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          ./mcp-publisher --help > /dev/null
+        env:
+          # Pinned deliberately. An unpinned publisher could change validation or
+          # auth behaviour between runs with no commit here.
+          PUBLISHER_VERSION: 1.8.1
+
+      - name: The release asset must exist and match the hash in server.json
+        # The registry fetches this URL and verifies the hash itself, so a
+        # mismatch would fail server-side with a less obvious message. Checking
+        # here means a stale server.json fails on the file rather than on the
+        # registry's rejection.
+        run: |
+          url=$(python3 -c "import json;print(json.load(open('server.json'))['packages'][0]['identifier'])")
+          want=$(python3 -c "import json;print(json.load(open('server.json'))['packages'][0]['fileSha256'])")
+          curl -sL --fail -o /tmp/asset.mcpb "$url"
+          got=$(sha256sum /tmp/asset.mcpb | cut -d' ' -f1)
+          echo "url:  $url"
+          echo "want: $want"
+          echo "got:  $got"
+          [ "$want" = "$got" ] || { echo "::error::server.json fileSha256 does not match the published asset"; exit 1; }
+
+      - name: Validate server.json
+        run: ./mcp-publisher validate
+
+      - name: Authenticate via GitHub OIDC
+        # Proves this run belongs to the primeline-ai org, which is what the
+        # io.github.primeline-ai namespace requires.
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        run: ./mcp-publisher publish
+
+      - name: Confirm the entry is actually queryable
+        # Publishing returning success is not the same as the entry being
+        # readable. Ask the public API for it.
+        run: |
+          for i in 1 2 3 4 5 6; do
+            body=$(curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=kairn")
+            if echo "$body" | grep -q 'io.github.primeline-ai/kairn'; then
+              echo "$body" | head -c 600; echo; echo "entry is live"; exit 0
+            fi
+            echo "not visible yet, attempt $i"; sleep 10
+          done
+          echo "::error::published but the entry is not queryable"; exit 1

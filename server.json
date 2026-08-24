@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.primeline-ai/kairn",
+  "description": "Local-first knowledge engine for AI agents: memory, graph, and recall over MCP.",
+  "repository": {
+    "url": "https://github.com/primeline-ai/kairn",
+    "source": "github"
+  },
+  "version": "0.2.1",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/primeline-ai/kairn/releases/download/v0.2.1/kairn-0.2.1.mcpb",
+      "fileSha256": "a326a88bd5bfa6acc3a49d1e6ad895f51997303b101d57ba0b507683b8bcc990",
+      "version": "0.2.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "KAIRN_WORKSPACE",
+          "description": "Directory holding the Kairn database. Everything Kairn stores stays inside it and never leaves this machine. Defaults to ~/.kairn.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "filepath"
+        }
+      ]
+    }
+  ]
+}
