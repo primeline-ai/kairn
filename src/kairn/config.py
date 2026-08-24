@@ -78,7 +78,15 @@ class Config:
         # Override from env
         env_path = os.environ.get("KAIRN_WORKSPACE")
         if env_path:
-            config.workspace_path = Path(env_path)
+            # Expand before use. KAIRN_WORKSPACE is now a user-facing setting in
+            # the MCP bundle, where "~/kairn" is the obvious thing to type. Taken
+            # literally it yields a relative path, so the database is created at
+            # $HOME/kairn while config.yaml is looked for at the literal "~/kairn"
+            # and silently not found - the user's settings are then ignored with
+            # no error at all.
+            config.workspace_path = (
+                Path(os.path.expandvars(env_path)).expanduser().resolve()
+            )
 
         env_log = os.environ.get("KAIRN_LOG_LEVEL")
         if env_log:

@@ -33,7 +33,13 @@ def _workspace() -> Path:
     raw = os.environ.get("KAIRN_WORKSPACE", "").strip()
     if not raw or "${" in raw:
         return DEFAULT_WORKSPACE
-    return Path(os.path.expandvars(raw)).expanduser()
+    resolved = Path(os.path.expandvars(raw)).expanduser()
+    if not resolved.is_absolute():
+        # A relative value lands wherever the host happened to start the server,
+        # which for a bundle is not a place the user can find. `kairn serve`
+        # resolves; this path must not be the one that does not.
+        resolved = (Path.cwd() / resolved).resolve()
+    return resolved
 
 
 def main() -> int:

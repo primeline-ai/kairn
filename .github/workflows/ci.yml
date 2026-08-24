@@ -35,3 +35,59 @@ jobs:
           pip install -e ".[dev,team]"
       - name: Test
         run: pytest tests/ -q
+
+  bundle:
+    # The MCP bundle is a shipped artifact that the suite above never touches:
+    # pytest is confined to testpaths = ["tests"], so packaging/mcpb/ is invisible
+    # to it. Without this job a schema-invalid manifest, a syntax error in the
+    # entry point, or a version that drifted away from the PyPI release would all
+    # reach users, because nothing here ever builds the thing the release ships.
+    name: mcpb bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install pytest
+        run: python -m pip install --upgrade pip pytest
+
+      - name: Version parity and workspace resolution
+        # Runs from the bundle directory: these tests are deliberately outside
+        # the root testpaths so they never slow the matrix above.
+        run: pytest packaging/mcpb/tests -q
+
+      - name: Pack the bundle
+        # `mcpb pack` validates manifest.json against the real v0.4 schema and
+        # fails the build if it does not conform, so this is the schema gate too.
+        run: npx -y @anthropic-ai/mcpb@latest pack packaging/mcpb "$RUNNER_TEMP/kairn.mcpb"
+
+      - name: The bundle must not ship build or test artifacts
+        # .mcpbignore is the only thing keeping a 68 MB local .venv, stale
+        # bytecode tagged for one interpreter, and the tests out of a user
+        # download. An ignore file that silently stops matching is invisible
+        # otherwise, so assert on the packed contents rather than trusting it.
+        run: |
+          unzip -Z1 "$RUNNER_TEMP/kairn.mcpb" | sort | tee /tmp/contents.txt
+          if grep -qE '__pycache__|\.pyc$|^tests/|^\.venv/' /tmp/contents.txt; then
+            echo "::error::bundle contains files that must not be distributed"
+            exit 1
+          fi
+          for required in manifest.json pyproject.toml src/server.py; do
+            grep -qx "$required" /tmp/contents.txt || {
+              echo "::error::bundle is missing $required"; exit 1; }
+          done
+
+      - name: The packed bundle must actually start and answer MCP
+        # Packing proves the archive is well formed, not that it runs. This
+        # unpacks it somewhere else entirely and drives a real stdio handshake,
+        # so a bundle that validates but cannot serve fails here instead of on a
+        # user's machine.
+        run: |
+          mkdir -p "$RUNNER_TEMP/unpacked"
+          unzip -q "$RUNNER_TEMP/kairn.mcpb" -d "$RUNNER_TEMP/unpacked"
+          python packaging/mcpb/tests/smoke_stdio.py "$RUNNER_TEMP/unpacked"
