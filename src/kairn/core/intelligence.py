@@ -14,6 +14,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from kairn.core.experience import ExperienceEngine
+from kairn.core.relevance import (
+    RELEVANCE_KIND_MATCH,
+    RELEVANCE_KIND_RECENCY,
+    RELEVANCE_KIND_UNSCORED,
+)
 from kairn.core.fts import _to_fts_query  # used here + re-exported for back-compat
 from kairn.core.graph import GraphEngine
 from kairn.core.ideas import IdeaEngine
@@ -307,6 +312,7 @@ class IntelligenceLayer:
             "namespace": namespace,
             "description": description,
             "relevance": relevance,
+            "relevance_kind": RELEVANCE_KIND_MATCH,
         }
 
     async def _keyword_node_recall(
@@ -480,6 +486,7 @@ class IntelligenceLayer:
                     "content": exp.content,
                     "confidence": exp.confidence,
                     "relevance": round(exp.relevance(at=now), 4),
+                    "relevance_kind": RELEVANCE_KIND_RECENCY,
                 }
             )
 
@@ -532,7 +539,14 @@ class IntelligenceLayer:
                     "type": node.type,
                     "namespace": node.namespace,
                     "description": node.description,
+                    # Not a ranking. `graph.query` returns nodes in its own
+                    # order and this surface has no score to report, so it
+                    # fills in a constant. Labelled UNSCORED so a caller does
+                    # not read 1.0 as a perfect match - and so the sort below,
+                    # which compares this constant against experience recency,
+                    # is visible rather than implied.
                     "relevance": 1.0,
+                    "relevance_kind": RELEVANCE_KIND_UNSCORED,
                 }
             )
 
@@ -565,6 +579,7 @@ class IntelligenceLayer:
                     "content": exp.content,
                     "confidence": exp.confidence,
                     "relevance": round(exp.relevance(at=now), 4),
+                    "relevance_kind": RELEVANCE_KIND_RECENCY,
                 }
             )
 
@@ -666,6 +681,7 @@ class IntelligenceLayer:
                 "namespace": e.namespace,
                 "content": e.content[:200] if detail == "summary" else e.content,
                 "relevance": round(e.relevance(at=now), 4),
+                "relevance_kind": RELEVANCE_KIND_RECENCY,
             }
             if detail != "summary":
                 exp_out["confidence"] = e.confidence

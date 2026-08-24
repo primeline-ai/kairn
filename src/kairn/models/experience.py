@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
+from kairn.core.relevance import RELEVANCE_KIND_RECENCY
+
 VALID_TYPES = {"solution", "pattern", "decision", "workaround", "gotcha", "preference"}
 VALID_CONFIDENCES = {"high", "medium", "low"}
 
@@ -67,6 +69,7 @@ class Experience(BaseModel):
             "content": self.content,
             "confidence": self.confidence,
             "relevance": round(self.relevance(), 3),
+            "relevance_kind": RELEVANCE_KIND_RECENCY,
         }
         if detail != "summary":
             data.update(

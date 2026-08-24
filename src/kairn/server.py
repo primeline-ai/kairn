@@ -18,6 +18,7 @@ from kairn.core.graph import GraphEngine
 from kairn.core.ideas import IdeaEngine
 from kairn.core.intelligence import IntelligenceLayer
 from kairn.core.memory import ProjectMemory
+from kairn.core.relevance import RELEVANCE_KIND_RECENCY
 from kairn.core.router import ContextRouter
 from kairn.diagnostic import run_checks
 from kairn.events.bus import EventBus
@@ -733,7 +734,11 @@ def create_server(db_path: str) -> FastMCP:
         min_relevance: Annotated[
             float,
             Field(
-                description="Minimum relevance 0.0-1.0",
+                description=(
+                    "Minimum RECENCY 0.0-1.0 (time-decay), not match quality. "
+                    "A high value returns only recent experiences, however "
+                    "poorly they match the query."
+                ),
                 ge=0.0,
                 le=1.0,
             ),
@@ -766,6 +771,7 @@ def create_server(db_path: str) -> FastMCP:
                 "content": e.content,
                 "confidence": e.confidence,
                 "relevance": round(e.relevance(), 4),
+                "relevance_kind": RELEVANCE_KIND_RECENCY,
                 "tags": e.tags,
             }
             for e in experiences
@@ -1012,7 +1018,11 @@ def create_server(db_path: str) -> FastMCP:
         min_relevance: Annotated[
             float,
             Field(
-                description="Minimum relevance 0.0-1.0",
+                description=(
+                    "Minimum RECENCY 0.0-1.0 (time-decay), not match quality. "
+                    "A high value returns only recent experiences, however "
+                    "poorly they match the query."
+                ),
                 ge=0.0,
                 le=1.0,
             ),
@@ -1198,6 +1208,7 @@ def create_server(db_path: str) -> FastMCP:
                 "content": e.content[:200],
                 "confidence": e.confidence,
                 "relevance": round(e.relevance(), 4),
+                "relevance_kind": RELEVANCE_KIND_RECENCY,
             }
             for e in experiences
         ]
