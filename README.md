@@ -5,7 +5,7 @@
 
 > Context-aware knowledge engine for AI assistants.
 
-mcp-name: io.github.primeline-ai/kairn
+<!-- mcp-name: io.github.primeline-ai/kairn -->
 
 **Status: Alpha.** The API and CLI are functional and tested (see
 [Development](#development)), but interfaces may still change between
@@ -25,12 +25,9 @@ Add it to Claude Code in one line:
 claude mcp add kairn -- kairn serve ~/brain
 ```
 
-Or install it as a one-click bundle, no Python setup required:
-
-```bash
-# download kairn-0.2.1.mcpb from the latest release and open it
-open kairn-0.2.1.mcpb
-```
+Or install it as a one-click bundle, no Python setup required: download the
+`.mcpb` file from the [latest release](https://github.com/primeline-ai/kairn/releases/latest)
+and open it with a bundle-aware app such as Claude Desktop.
 
 For other clients, see [Quick Start](#quick-start) below. New to Kairn? Jump to [First 5 Minutes](#first-5-minutes).
 

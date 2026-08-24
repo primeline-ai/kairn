@@ -120,16 +120,28 @@ def test_registry_asset_url_names_the_same_version():
     assert pkg["identifier"].endswith(f"kairn-{version}.mcpb"), pkg["identifier"]
 
 
-def test_readme_carries_the_registry_ownership_token():
-    """The PyPI validator reads this token out of the PUBLISHED README.
+def test_readme_source_carries_the_registry_ownership_token():
+    """Guards the SOURCE README, which is what becomes the PyPI description.
 
-    It has to survive into the package description, sit on its own line, and
-    name exactly the server in server.json. If someone rewrites the README
-    intro, the next PyPI release silently stops qualifying and the failure only
-    shows up at publish time.
+    Scope, stated plainly because the distinction bites: the registry's PyPI
+    validator reads the description of a PUBLISHED release, not this file. This
+    test cannot see that, and passing here does not mean release 0.2.1 qualifies
+    (it does not - it was published before the token existed). What it does
+    guarantee is that the token is still present when the NEXT release is cut,
+    which is the only moment it can be fixed.
+
+    Today `server.json` declares only an `mcpb` package and ownership comes from
+    GitHub OIDC, so nothing consumes the token yet. It is kept because adding a
+    `pypi` entry later is otherwise a silent rejection at publish time.
+
+    The token sits inside an HTML comment: invisible on GitHub and PyPI, and the
+    validator accepts a comment close as a boundary.
     """
     name = json.loads((REPO / "server.json").read_text())["name"]
-    lines = (REPO / "README.md").read_text().splitlines()
-    assert f"mcp-name: {name}" in lines, (
-        f"README must contain a line exactly 'mcp-name: {name}'"
+    text = (REPO / "README.md").read_text()
+    token = f"mcp-name: {name}"
+    assert token in text, f"README must contain '{token}'"
+    after = text.split(token, 1)[1][:4]
+    assert after[:1] in (" ", "\n", "<") or after.startswith(" -->"), (
+        f"token must be followed by a boundary, found {after!r}"
     )

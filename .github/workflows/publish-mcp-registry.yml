@@ -26,14 +26,25 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install mcp-publisher
+        # This binary is handed an OIDC token that can publish under
+        # io.github.primeline-ai/*, so it is verified before it runs. A tag pin
+        # alone is not enough: GitHub release assets are mutable, so the same
+        # tag can serve different bytes later. The upstream release ships a
+        # checksums file; the expected digest is committed here rather than read
+        # from that file alone, because fetching both from the same mutable
+        # release would let one attacker edit both.
         run: |
-          curl -sL "https://github.com/modelcontextprotocol/registry/releases/download/v${PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" \
-            | tar xz mcp-publisher
+          base="https://github.com/modelcontextprotocol/registry/releases/download/v${PUBLISHER_VERSION}"
+          curl -sL --fail -o publisher.tar.gz "$base/mcp-publisher_linux_amd64.tar.gz"
+          echo "${PUBLISHER_SHA256}  publisher.tar.gz" | sha256sum -c - || {
+            echo "::error::mcp-publisher checksum mismatch - refusing to run it"; exit 1; }
+          tar xzf publisher.tar.gz mcp-publisher
           ./mcp-publisher --help > /dev/null
         env:
           # Pinned deliberately. An unpinned publisher could change validation or
           # auth behaviour between runs with no commit here.
           PUBLISHER_VERSION: 1.8.1
+          PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
 
       - name: The release asset must exist and match the hash in server.json
         # The registry fetches this URL and verifies the hash itself, so a
@@ -59,17 +70,27 @@ jobs:
         run: ./mcp-publisher login github-oidc
 
       - name: Publish
+        id: publish
         run: ./mcp-publisher publish
 
       - name: Confirm the entry is actually queryable
         # Publishing returning success is not the same as the entry being
-        # readable. Ask the public API for it.
+        # readable, so this asks the public API rather than trusting the exit
+        # code of the step above.
+        #
+        # Deliberately a WARNING and not a failure. The registry refuses a
+        # duplicate version, so once Publish has succeeded there is no second
+        # green run available: a transient blip here would otherwise leave a
+        # live entry with a permanently red workflow and no way to tell
+        # "not published" from "published, confirmation flaked". The publish
+        # already succeeded by this point; this step reports, it does not gate.
+        if: always() && steps.publish.outcome == 'success'
         run: |
           for i in 1 2 3 4 5 6; do
-            body=$(curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=kairn")
+            body=$(curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=kairn" || true)
             if echo "$body" | grep -q 'io.github.primeline-ai/kairn'; then
               echo "$body" | head -c 600; echo; echo "entry is live"; exit 0
             fi
             echo "not visible yet, attempt $i"; sleep 10
           done
-          echo "::error::published but the entry is not queryable"; exit 1
+          echo "::warning::publish succeeded but the entry is not queryable yet - check https://registry.modelcontextprotocol.io/v0/servers?search=kairn before re-running, because a duplicate version is refused"

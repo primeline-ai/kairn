@@ -123,6 +123,29 @@ jobs:
           unzip -q "$RUNNER_TEMP/kairn.mcpb" -d "$RUNNER_TEMP/unpacked"
           python packaging/mcpb/tests/smoke_stdio.py "$RUNNER_TEMP/unpacked"
 
+      - name: server.json must match the published release asset
+        # The parity test forces server.json's version and asset URL to move
+        # with the release, but nothing binds the HASH. So a release-prep bump
+        # could land on main with the URL at the new version and fileSha256
+        # still the previous digest, fully green, because only the manually
+        # dispatched publish workflow ever compares them.
+        #
+        # Same release-order window as the PyPI check above: right after a bump
+        # the asset does not exist yet. That is a loud skip, not a failure.
+        run: |
+          url=$(python3 -c "import json;print(json.load(open('server.json'))['packages'][0]['identifier'])")
+          want=$(python3 -c "import json;print(json.load(open('server.json'))['packages'][0]['fileSha256'])")
+          code=$(curl -sL -o /tmp/asset.mcpb -w '%{http_code}' "$url")
+          if [ "$code" != "200" ]; then
+            echo "::warning::release asset not published yet (HTTP $code) - hash check skipped: $url"
+            exit 0
+          fi
+          got=$(sha256sum /tmp/asset.mcpb | cut -d' ' -f1)
+          echo "want: $want"
+          echo "got:  $got"
+          [ "$want" = "$got" ] || {
+            echo "::error::server.json fileSha256 does not match the published asset"; exit 1; }
+
       - name: Publish the bundle as a build artifact
         # Otherwise the job packs the thing and throws it away, and there is no
         # path from a green build to a file anyone can install.
