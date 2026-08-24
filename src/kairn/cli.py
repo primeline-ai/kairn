@@ -43,8 +43,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from kairn import __version__
-from kairn.core.relevance import RELEVANCE_KIND_RECENCY
 from kairn.config import Config
+from kairn.relevance import RELEVANCE_KIND_RECENCY
 from kairn.storage.metadata_store import MetadataStore
 from kairn.storage.sqlite_store import SQLiteStore
 
@@ -556,7 +556,7 @@ def learn(
     "--min-relevance",
     default=0.0,
     type=click.FloatRange(0.0, 1.0),
-    help="Minimum RECENCY filter (time-decay), not match quality",
+    help="Minimum score. Gates NODES on match strength and EXPERIENCES on recency",
 )
 def recall(path: str, topic: str | None, limit: int, min_relevance: float) -> None:
     """Surface relevant past knowledge (cross-searches nodes + experiences)."""
@@ -1021,7 +1021,7 @@ def remove(
     "--threshold",
     default=0.01,
     type=click.FloatRange(0.0, 1.0),
-    help="Remove experiences below this relevance",
+    help="DELETE experiences below this RECENCY (time-decay age), not match quality",
 )
 def prune(path: str, threshold: float) -> None:
     """Remove expired experiences below the relevance threshold."""

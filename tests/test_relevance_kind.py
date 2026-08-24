@@ -1,42 +1,52 @@
-"""Every `relevance` a caller sees must say which of three things it is.
+"""Every `relevance` a caller sees must say which of four things it is.
 
 THE GATE, verbatim from the plan this implements: "no caller receives a number
 that claims to be match quality when it is recency."
 
-The tests below are written as an INVARIANT over real surface output rather than
-as a checklist of the nine known sites, because a checklist passes forever while
-a tenth site is added unlabelled. `test_every_relevance_carries_its_kind` walks
-the actual dicts each surface returns and fails on any that carries `relevance`
-without `relevance_kind` - so a new serialisation site fails the suite by
-default, which is the direction the failure should point.
+WHAT THESE TESTS COVER, stated exactly rather than generously. An earlier
+version of this docstring claimed a tenth unlabelled site "fails the suite by
+default". That is false and was measured to be false: a reviewer added a
+`relevance` key to `GraphEngine.get_related` and the suite stayed green. These
+walk the payloads of three `IntelligenceLayer` methods plus three named
+server/CLI surfaces. That is a checklist expressed as traversal, and a genuinely
+automatic guard needs a shared serialiser or a route registry, which this change
+does not build.
 
-MUTATION CONTROL for this file lives in `test_the_invariant_can_actually_fail`:
-it constructs the exact shape a forgotten site produces and asserts the checker
-rejects it. Without that, an invariant that walks zero dicts, or a checker with
-an inverted condition, passes silently - and a check that cannot fail is not a
-check.
+WHAT THEY DO ENFORCE, and this is the part that matters: not merely that a kind
+is PRESENT, but that it is the RIGHT one for the row's source. Presence-only was
+the first version's real weakness - relabelling every experience "match" would
+have passed it, which is precisely the defect the gate names. `wrong_kinds()`
+derives the expected kind from `source` and fails on a mismatch, so a
+substitution mutant dies, not only a deletion mutant.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
+
 import pytest
 import pytest_asyncio
+from fastmcp import Client
 
 from kairn.core.experience import ExperienceEngine
 from kairn.core.graph import GraphEngine
 from kairn.core.ideas import IdeaEngine
 from kairn.core.intelligence import IntelligenceLayer
 from kairn.core.memory import ProjectMemory
-from kairn.core.relevance import (
-    RELEVANCE_KIND_MATCH,
-    RELEVANCE_KIND_RECENCY,
-    RELEVANCE_KIND_UNSCORED,
-    RELEVANCE_KINDS,
-)
 from kairn.core.router import ContextRouter
 from kairn.events.bus import EventBus
 from kairn.models.experience import Experience
+from kairn.relevance import (
+    RELEVANCE_KIND_MATCH,
+    RELEVANCE_KIND_RECENCY,
+    RELEVANCE_KIND_SIMILARITY,
+    RELEVANCE_KIND_UNSCORED,
+    RELEVANCE_KINDS,
+)
+from kairn.server import create_server
 from kairn.storage.sqlite_store import SQLiteStore
 
 
@@ -82,9 +92,8 @@ def offenders(payload) -> list[dict]:
 
     def walk(o):
         if isinstance(o, dict):
-            if "relevance" in o:
-                if o.get("relevance_kind") not in RELEVANCE_KINDS:
-                    found.append(o)
+            if "relevance" in o and o.get("relevance_kind") not in RELEVANCE_KINDS:
+                found.append(o)
             for v in o.values():
                 walk(v)
         elif isinstance(o, (list, tuple)):
@@ -93,6 +102,40 @@ def offenders(payload) -> list[dict]:
 
     walk(payload)
     return found
+
+
+EXPECTED_BY_SOURCE = {
+    "experience": {RELEVANCE_KIND_RECENCY},
+    # A node row can legitimately be any of three: bm25 on the keyword path,
+    # cosine when semantic recall is on, and the literal 1.0 a text-less browse
+    # or crossref produces. It can never be recency.
+    "node": {RELEVANCE_KIND_MATCH, RELEVANCE_KIND_SIMILARITY, RELEVANCE_KIND_UNSCORED},
+}
+
+
+def wrong_kinds(payload, *, default_source=None) -> list[tuple]:
+    """Rows whose `relevance_kind` contradicts where the row came from.
+
+    This is the check that kills a SUBSTITUTION mutant. `offenders()` only sees
+    a missing or unknown kind, so flipping every experience to "match" - the
+    exact thing the gate forbids - passes it."""
+    bad: list[tuple] = []
+
+    def walk(o, src=default_source):
+        if isinstance(o, dict):
+            src = o.get("source", src)
+            if "relevance" in o:
+                allowed = EXPECTED_BY_SOURCE.get(src)
+                if allowed is not None and o.get("relevance_kind") not in allowed:
+                    bad.append((src, o.get("relevance_kind"), o.get("id")))
+            for k, v in o.items():
+                walk(v, "experience" if k == "experiences" else ("node" if k == "nodes" else src))
+        elif isinstance(o, (list, tuple)):
+            for v in o:
+                walk(v, src)
+
+    walk(payload)
+    return bad
 
 
 def count_relevance(payload) -> int:
@@ -127,13 +170,19 @@ async def test_every_relevance_carries_its_kind(intel):
         # An empty surface would pass the invariant vacuously. Assert it saw
         # something first, so a fixture that stops matching turns into a red
         # test rather than a quiet green one.
-        assert seen > 0, f"{name} returned no rows carrying relevance - the "
-        f"fixture no longer exercises this surface, so the invariant below is "
-        f"vacuous"
+        assert seen > 0, (
+            f"{name} returned no rows carrying relevance - the fixture no "
+            f"longer exercises this surface, so the check below is vacuous"
+        )
         bad = offenders(payload)
         assert not bad, (
             f"{name}: {len(bad)} row(s) report `relevance` with no valid "
             f"`relevance_kind`: {bad[:2]}"
+        )
+        mism = wrong_kinds(payload)
+        assert not mism, (
+            f"{name}: {len(mism)} row(s) carry a kind that contradicts their "
+            f"source (source, kind, id): {mism[:3]}"
         )
 
 
@@ -161,7 +210,15 @@ async def test_node_rows_are_labelled_match_or_unscored(intel):
     nodes = [r for r in rows if r.get("source") == "node"]
     assert nodes, "fixture produced no nodes"
     for n in nodes:
-        assert n["relevance_kind"] in {RELEVANCE_KIND_MATCH, RELEVANCE_KIND_UNSCORED}
+        # MATCH only. The first version accepted UNSCORED too, which meant
+        # flipping recall's bm25 nodes to "unscored" - a caller-visible
+        # regression of exactly the kind this file exists to catch - left the
+        # test green. This fixture always queries with text, so every node here
+        # has a real rank.
+        assert n["relevance_kind"] == RELEVANCE_KIND_MATCH, (
+            f"recall node {n.get('id')} reports {n.get('relevance_kind')!r}; "
+            f"it came from _bm25_to_relevance(rank) on a text query"
+        )
 
 
 @pytest.mark.asyncio
@@ -218,15 +275,6 @@ def test_the_invariant_can_actually_fail():
 # command a human runs. "A fix applied to N-1 of N sites looks exactly like a
 # fix" - so these exist to make the remaining three fail when broken.
 # ---------------------------------------------------------------------------
-
-import json
-import subprocess
-import sys
-
-from fastmcp import Client
-
-from kairn.server import create_server
-
 
 @pytest.fixture
 async def mcp_client(tmp_path):
@@ -299,3 +347,87 @@ def test_cli_memories_labels_its_relevance(tmp_path):
     assert exps, f"cli memories returned nothing - test would be vacuous: {r.stdout[:200]}"
     for e in exps:
         assert e.get("relevance_kind") == RELEVANCE_KIND_RECENCY
+
+
+def test_wrong_kinds_can_actually_fail():
+    """MUTATION CONTROL for the SOURCE-aware checker, both directions.
+
+    The deletion sweep over the production sites proves a missing label dies.
+    It says nothing about a WRONG label, which is the failure the gate actually
+    names ("claims to be match quality when it is recency"). This proves the
+    checker that catches that can itself fail."""
+    lying = {"results": [{"source": "experience", "id": "x", "relevance": 0.98,
+                          "relevance_kind": RELEVANCE_KIND_MATCH}]}
+    assert wrong_kinds(lying), "an experience labelled 'match' was accepted"
+
+    node_lying = {"results": [{"source": "node", "id": "x", "relevance": 0.6,
+                               "relevance_kind": RELEVANCE_KIND_RECENCY}]}
+    assert wrong_kinds(node_lying), "a node labelled 'recency' was accepted"
+
+    honest = {"results": [
+        {"source": "experience", "id": "a", "relevance": 0.98,
+         "relevance_kind": RELEVANCE_KIND_RECENCY},
+        {"source": "node", "id": "b", "relevance": 0.6,
+         "relevance_kind": RELEVANCE_KIND_MATCH},
+        {"source": "node", "id": "c", "relevance": 0.9,
+         "relevance_kind": RELEVANCE_KIND_SIMILARITY},
+        {"source": "node", "id": "d", "relevance": 1.0,
+         "relevance_kind": RELEVANCE_KIND_UNSCORED},
+    ]}
+    assert not wrong_kinds(honest), "correctly labelled rows were rejected"
+
+    # And it must reach rows nested under a keyed section, where `source` is
+    # absent and only the container name says what they are.
+    nested = {"experiences": [{"id": "x", "relevance": 0.9,
+                               "relevance_kind": RELEVANCE_KIND_MATCH}]}
+    assert wrong_kinds(nested), "the checker did not descend into `experiences`"
+
+
+async def test_semantic_path_is_labelled_similarity_not_match(tmp_path):
+    """The site with no coverage at all until now.
+
+    `_node_result` is a funnel for three numbers and an earlier version
+    hardcoded MATCH. The semantic path feeds it embedding cosine - a different
+    scale, corpus-independent - and no fixture in this file turned semantic
+    recall on, so that mislabel was invisible.
+
+    The embedder goes on the STORE (that is where embed-at-write happens) as
+    well as the layer; passing it only to GraphEngine writes no vectors and the
+    semantic path then finds nothing to rerank."""
+
+    def embed(texts: list[str]) -> list[list[float]]:
+        # Every text gets the same vector, so cosine is 1.0 and every node
+        # clears the floor. The VALUE is irrelevant here; the LABEL is the test.
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    store = SQLiteStore(tmp_path / "sem.db", embedder=embed, embedder_model="fake-3")
+    await store.initialize()
+    bus = EventBus()
+    layer = IntelligenceLayer(
+        store=store,
+        event_bus=bus,
+        graph=GraphEngine(store, bus),
+        router=ContextRouter(store, bus),
+        memory=ProjectMemory(store, bus),
+        experience=ExperienceEngine(store, bus),
+        ideas=IdeaEngine(store, bus),
+        embedder=embed,
+        embedder_model="fake-3",
+        semantic_recall=True,
+        semantic_floor=0.25,
+    )
+    await layer.learn(
+        content="wal checkpoint starvation under concurrent writers",
+        type="gotcha",
+        confidence="high",
+    )
+    payload = await layer.recall(topic="checkpoint starvation", limit=10)
+    rows = payload if isinstance(payload, list) else payload.get("results", [])
+    nodes = [r for r in rows if r.get("source") == "node"]
+    assert nodes, "semantic recall returned no nodes - this test would be vacuous"
+    for n in nodes:
+        assert n["relevance_kind"] == RELEVANCE_KIND_SIMILARITY, (
+            f"semantic node {n.get('id')} reports {n.get('relevance_kind')!r}; "
+            f"its number is an embedding cosine, not a bm25 match score"
+        )
+    assert not wrong_kinds(payload)

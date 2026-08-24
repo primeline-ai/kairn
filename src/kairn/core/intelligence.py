@@ -14,11 +14,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from kairn.core.experience import ExperienceEngine
-from kairn.core.relevance import (
-    RELEVANCE_KIND_MATCH,
-    RELEVANCE_KIND_RECENCY,
-    RELEVANCE_KIND_UNSCORED,
-)
 from kairn.core.fts import _to_fts_query  # used here + re-exported for back-compat
 from kairn.core.graph import GraphEngine
 from kairn.core.ideas import IdeaEngine
@@ -27,6 +22,13 @@ from kairn.core.router import ContextRouter
 from kairn.events.bus import EventBus
 from kairn.events.types import EventType
 from kairn.models.experience import VALID_CONFIDENCES, VALID_TYPES
+from kairn.relevance import (
+    RELEVANCE_KIND_MATCH,
+    RELEVANCE_KIND_RECENCY,
+    RELEVANCE_KIND_SIMILARITY,
+    RELEVANCE_KIND_UNSCORED,
+    RELEVANCE_KINDS,
+)
 from kairn.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -301,9 +303,18 @@ class IntelligenceLayer:
                 break
         return candidates
 
-    def _node_result(self, *, node_id, name, type_, namespace, description, relevance):
+    def _node_result(
+        self, *, node_id, name, type_, namespace, description, relevance, relevance_kind
+    ):
         # namespace travels in every item shape so downstream namespace-based
         # access filters can enforce their allowlists on this surface.
+        #
+        # relevance_kind is a REQUIRED argument, not a default. This factory is a
+        # funnel for three different numbers - bm25, embedding cosine, and the
+        # literal 1.0 a text-less browse produces - and an earlier version
+        # hardcoded MATCH here, which stamped "lexical match strength" on all
+        # three. A default would have hidden the next one the same way.
+        assert relevance_kind in RELEVANCE_KINDS, relevance_kind
         return {
             "source": "node",
             "id": node_id,
@@ -312,7 +323,7 @@ class IntelligenceLayer:
             "namespace": namespace,
             "description": description,
             "relevance": relevance,
-            "relevance_kind": RELEVANCE_KIND_MATCH,
+            "relevance_kind": relevance_kind,
         }
 
     async def _keyword_node_recall(
@@ -329,6 +340,10 @@ class IntelligenceLayer:
             relevance = _bm25_to_relevance(rank)
             if relevance < min_relevance:
                 continue
+            # A text-less query has no rank, and _bm25_to_relevance(None)
+            # returns the literal 1.0. That is the same non-score crossref
+            # reports, so it gets the same label - calling it "match" would
+            # advertise a perfect lexical hit on a query with no text in it.
             out.append(
                 self._node_result(
                     node_id=node.id,
@@ -337,6 +352,9 @@ class IntelligenceLayer:
                     namespace=node.namespace,
                     description=node.description,
                     relevance=relevance,
+                    relevance_kind=(
+                        RELEVANCE_KIND_MATCH if rank is not None else RELEVANCE_KIND_UNSCORED
+                    ),
                 )
             )
         return out
@@ -419,6 +437,9 @@ class IntelligenceLayer:
                     namespace=row["namespace"],
                     description=row.get("description"),
                     relevance=round(score, 4),
+                    # Embedding cosine, not bm25. A different scale and
+                    # corpus-independent, so it does not share MATCH's label.
+                    relevance_kind=RELEVANCE_KIND_SIMILARITY,
                 )
             )
             if len(out) >= limit:
@@ -583,7 +604,21 @@ class IntelligenceLayer:
                 }
             )
 
-        results.sort(key=lambda r: r["relevance"], reverse=True)
+        # ORDER-PRESERVING, and that is provable rather than hoped for. This
+        # used to sort every row on `relevance` alone - comparing a node's
+        # literal 1.0 against an experience's decay, two numbers that share a
+        # range and nothing else. It is replaced by an explicit two-level key
+        # that reproduces the old ORDER exactly:
+        #   nodes are all 1.0, so no experience could ever outrank one; the
+        #   only tie is a brand-new experience whose decay is also exactly 1.0,
+        #   and Python's sort is stable, so that tie already resolved in
+        #   insertion order - nodes are appended first, above.
+        # Same output, without the cross-scale comparison that made the number
+        # look meaningful. Changing the order is a behaviour change and belongs
+        # in the phase that owns ranking, not in a labelling change.
+        results.sort(
+            key=lambda r: (0 if r["source"] == "node" else 1, -r["relevance"]),
+        )
         results = results[:limit]
 
         await self.event_bus.emit(
