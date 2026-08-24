@@ -49,8 +49,13 @@ def _sites() -> dict[str, str]:
     locked = re.search(r'name = "kairn-ai"\nversion = "([^"]+)"', lock)
     assert locked, "could not read the kairn-ai pin from uv.lock"
 
+    server_json = json.loads((REPO / "server.json").read_text())
+    reg_pkg = server_json["packages"][0]
+
     return {
         "root pyproject.toml": _toml_version(REPO / "pyproject.toml"),
+        "server.json": server_json["version"],
+        "server.json package": reg_pkg["version"],
         "src/kairn/__init__.py": dunder.group(1),
         "bundle uv.lock pin": locked.group(1),
         "bundle pyproject.toml": _toml_version(BUNDLE / "pyproject.toml"),
@@ -93,5 +98,50 @@ def test_every_known_site_is_actually_found():
         "bundle kairn-ai pin",
         "bundle manifest.json",
         "src/kairn/server.py FastMCP",
+        "server.json",
+        "server.json package",
     }
     assert set(_sites()) == expected
+
+
+# --- MCP registry contract ------------------------------------------------
+
+
+def test_registry_asset_url_names_the_same_version():
+    """server.json points at one exact release asset.
+
+    After a version bump the URL still resolves - to the OLD bundle - so the
+    entry would advertise a new version while shipping the previous artifact.
+    Nothing else notices, because the file downloads fine.
+    """
+    pkg = json.loads((REPO / "server.json").read_text())["packages"][0]
+    version = json.loads((REPO / "server.json").read_text())["version"]
+    assert f"/v{version}/" in pkg["identifier"], pkg["identifier"]
+    assert pkg["identifier"].endswith(f"kairn-{version}.mcpb"), pkg["identifier"]
+
+
+def test_readme_source_carries_the_registry_ownership_token():
+    """Guards the SOURCE README, which is what becomes the PyPI description.
+
+    Scope, stated plainly because the distinction bites: the registry's PyPI
+    validator reads the description of a PUBLISHED release, not this file. This
+    test cannot see that, and passing here does not mean release 0.2.1 qualifies
+    (it does not - it was published before the token existed). What it does
+    guarantee is that the token is still present when the NEXT release is cut,
+    which is the only moment it can be fixed.
+
+    Today `server.json` declares only an `mcpb` package and ownership comes from
+    GitHub OIDC, so nothing consumes the token yet. It is kept because adding a
+    `pypi` entry later is otherwise a silent rejection at publish time.
+
+    The token sits inside an HTML comment: invisible on GitHub and PyPI, and the
+    validator accepts a comment close as a boundary.
+    """
+    name = json.loads((REPO / "server.json").read_text())["name"]
+    text = (REPO / "README.md").read_text()
+    token = f"mcp-name: {name}"
+    assert token in text, f"README must contain '{token}'"
+    after = text.split(token, 1)[1][:4]
+    assert after[:1] in (" ", "\n", "<") or after.startswith(" -->"), (
+        f"token must be followed by a boundary, found {after!r}"
+    )
