@@ -84,9 +84,14 @@ class Config:
             # $HOME/kairn while config.yaml is looked for at the literal "~/kairn"
             # and silently not found - the user's settings are then ignored with
             # no error at all.
-            config.workspace_path = (
-                Path(os.path.expandvars(env_path)).expanduser().resolve()
-            )
+            candidate = Path(os.path.expandvars(env_path)).expanduser()
+            # Same two degenerate inputs as the bundle entry point, and the same
+            # answer. An unsubstituted placeholder or a relative value would send
+            # the config.yaml lookup into the working directory, where it finds
+            # nothing and silently falls back to defaults - the user's settings
+            # ignored with no error. Keep the configured default instead.
+            if "${" not in env_path and candidate.is_absolute():
+                config.workspace_path = candidate.resolve()
 
         env_log = os.environ.get("KAIRN_LOG_LEVEL")
         if env_log:

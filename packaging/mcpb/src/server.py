@@ -35,10 +35,26 @@ def _workspace() -> Path:
         return DEFAULT_WORKSPACE
     resolved = Path(os.path.expandvars(raw)).expanduser()
     if not resolved.is_absolute():
-        # A relative value lands wherever the host happened to start the server,
-        # which for a bundle is not a place the user can find. `kairn serve`
-        # resolves; this path must not be the one that does not.
-        resolved = (Path.cwd() / resolved).resolve()
+        # Do NOT fall back to the working directory. mcp_config runs
+        # `uv run --directory ${__dirname}`, so cwd is the unpacked bundle -
+        # under Claude Extensions on Windows, inside an installer-managed
+        # directory elsewhere. A database written there is invisible to the user
+        # and discarded on the next install, which is the failure this whole
+        # function exists to prevent.
+        #
+        # Two inputs reach here and both are degenerate rather than intentional:
+        #   ".kairn"    a relative value from a host that did not resolve it
+        #   "/.kairn"   ${HOME} substituted to empty. On Windows this is NOT
+        #               absolute (no drive), and joining it to cwd yields the
+        #               drive root, C:\.kairn - not the user profile.
+        # A POSIX "/.kairn" IS absolute and is honoured, because there it is a
+        # real path the user can mean.
+        print(
+            f"kairn: ignoring non-absolute KAIRN_WORKSPACE {raw!r}; "
+            f"using {DEFAULT_WORKSPACE}",
+            file=sys.stderr,
+        )
+        return DEFAULT_WORKSPACE
     return resolved
 
 
