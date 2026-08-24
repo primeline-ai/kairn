@@ -33,15 +33,36 @@ def test_blank_and_whitespace_use_default(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "literal",
-    ["${HOME}/.kairn", "${user_config.workspace}", "/data/${HOME}/x"],
+    "literal", ["${user_config.workspace}", "${nothing_can_fill_this}"]
 )
-def test_unsubstituted_placeholder_falls_back(monkeypatch, literal):
-    """The regression: these must NOT become a directory named '${HOME}'."""
+def test_unresolvable_placeholder_falls_back(monkeypatch, literal, capsys):
+    """A placeholder that survives expansion is a host that did not substitute.
+
+    The regression this guards: taken literally these become a directory named
+    after the placeholder itself, created wherever the server started.
+    """
     monkeypatch.setenv("KAIRN_WORKSPACE", literal)
     resolved = bundle_server._workspace()
     assert resolved == bundle_server.DEFAULT_WORKSPACE
     assert "${" not in str(resolved)
+    assert "unsubstituted placeholder" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("spelling", ["${HOME}/kairnws", "$HOME/kairnws"])
+def test_braced_and_bare_variables_agree(monkeypatch, spelling):
+    """Both spellings of one variable must resolve identically.
+
+    Guarding the RAW string rejected the braced form while accepting the bare
+    one, so the two disagreed and expandvars' braced branch was unreachable.
+    """
+    monkeypatch.setenv("KAIRN_WORKSPACE", spelling)
+    assert bundle_server._workspace() == Path.home() / "kairnws"
+
+
+def test_variable_embedded_mid_path_is_expanded(monkeypatch, tmp_path):
+    monkeypatch.setenv("KAIRN_MID", str(tmp_path).lstrip("/"))
+    monkeypatch.setenv("KAIRN_WORKSPACE", "/${KAIRN_MID}/ws")
+    assert bundle_server._workspace() == Path(f"/{str(tmp_path).lstrip('/')}/ws")
 
 
 def test_tilde_is_expanded(monkeypatch):

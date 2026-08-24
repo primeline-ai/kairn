@@ -31,9 +31,24 @@ def _workspace() -> Path:
     ${...} as "not configured" and use the default instead.
     """
     raw = os.environ.get("KAIRN_WORKSPACE", "").strip()
-    if not raw or "${" in raw:
+    if not raw:
         return DEFAULT_WORKSPACE
-    resolved = Path(os.path.expandvars(raw)).expanduser()
+
+    # Expand FIRST, then test the result. Testing the raw string would reject
+    # "${HOME}/kairn" - which expandvars resolves perfectly well - while
+    # accepting the identical "$HOME/kairn", so two spellings of one thing would
+    # behave differently and the braced branch of expandvars would be dead code.
+    expanded = os.path.expandvars(raw)
+    if "${" in expanded:
+        # Survived expansion, so it is a host placeholder no environment can
+        # fill - "${user_config.workspace}" being the one that actually occurs.
+        print(
+            f"kairn: KAIRN_WORKSPACE is an unsubstituted placeholder {raw!r}; "
+            f"using {DEFAULT_WORKSPACE}",
+            file=sys.stderr,
+        )
+        return DEFAULT_WORKSPACE
+    resolved = Path(expanded).expanduser()
     if not resolved.is_absolute():
         # Do NOT fall back to the working directory. mcp_config runs
         # `uv run --directory ${__dirname}`, so cwd is the unpacked bundle -
