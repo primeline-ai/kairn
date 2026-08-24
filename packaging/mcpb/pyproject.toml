@@ -1,0 +1,19 @@
+# Dependency manifest for the Kairn MCP Bundle (.mcpb).
+#
+# This is NOT the package definition for Kairn itself - that lives in the
+# repository root pyproject.toml. This file exists solely so the MCPB `uv`
+# runtime can resolve what the bundle needs at install time, per
+# https://github.com/modelcontextprotocol/mcpb MANIFEST.md "UV Runtime".
+#
+# The bundle carries no Kairn source. It depends on the published PyPI
+# release, so the bundle and PyPI can never drift apart in content - only in
+# version, which is pinned below and asserted by the version-parity check.
+
+[project]
+name = "kairn-mcpb"
+version = "0.2.1"
+description = "MCP Bundle wrapper that runs the published kairn-ai server"
+requires-python = ">=3.11"
+dependencies = [
+    "kairn-ai==0.2.1",
+]

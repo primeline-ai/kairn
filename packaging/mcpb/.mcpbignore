@@ -1,0 +1,15 @@
+# Nothing here reaches the user's machine unless it is needed to RUN the server.
+#
+# __pycache__ matters more than it looks: the bundle claims python >=3.11, but a
+# committed .pyc is tagged for one exact interpreter (cpython-312) and would be
+# stale or ignored on every other one. Shipping bytecode into a cross-platform
+# artifact is noise at best and a wrong-version trap at worst.
+__pycache__/
+*.py[cod]
+
+# Tests verify the entry point at build time; they are not part of the product.
+tests/
+
+.DS_Store
+*.egg-info/
+.venv/
