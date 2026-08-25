@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -108,6 +109,7 @@ class GraphEngine:
         node_type: str | None = None,
         tags: list[str] | None = None,
         visibility: str | None = None,
+        node_ids: Sequence[str] | None = None,
         limit: int = 10,
         offset: int = 0,
     ) -> list[tuple[Node, float | None]]:
@@ -116,6 +118,11 @@ class GraphEngine:
         `rank` is None for non-text queries (no MATCH, so no bm25 score).
         Callers that need match strength - recall ranking and the abstention
         gate - use this; `query` stays a plain Node list for everyone else.
+
+        `node_ids` restricts the match to an explicit candidate set, so a caller
+        holding its own candidates can score all of them rather than whichever
+        ones fall inside a global top-K. Requires `text`; an empty sequence
+        restricts to nothing and returns [].
         """
         rows = await self.store.query_nodes(
             namespace=namespace,
@@ -123,6 +130,7 @@ class GraphEngine:
             tags=tags,
             text=text,
             visibility=visibility,
+            node_ids=node_ids,
             limit=limit,
             offset=offset,
         )
