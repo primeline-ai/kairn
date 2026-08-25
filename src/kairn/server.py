@@ -21,6 +21,7 @@ from kairn.core.memory import ProjectMemory
 from kairn.core.router import ContextRouter
 from kairn.diagnostic import run_checks
 from kairn.events.bus import EventBus
+from kairn.relevance import RELEVANCE_KIND_RECENCY
 from kairn.storage.sqlite_store import SQLiteStore
 
 logger = logging.getLogger(__name__)
@@ -733,7 +734,11 @@ def create_server(db_path: str) -> FastMCP:
         min_relevance: Annotated[
             float,
             Field(
-                description="Minimum relevance 0.0-1.0",
+                description=(
+                    "Minimum RECENCY 0.0-1.0 (time-decay), not match quality. "
+                    "A high value returns only recent experiences, however "
+                    "poorly they match the query."
+                ),
                 ge=0.0,
                 le=1.0,
             ),
@@ -766,6 +771,7 @@ def create_server(db_path: str) -> FastMCP:
                 "content": e.content,
                 "confidence": e.confidence,
                 "relevance": round(e.relevance(), 4),
+                "relevance_kind": RELEVANCE_KIND_RECENCY,
                 "tags": e.tags,
             }
             for e in experiences
@@ -777,7 +783,11 @@ def create_server(db_path: str) -> FastMCP:
         threshold: Annotated[
             float,
             Field(
-                description="Remove experiences below this relevance",
+                description=(
+                    "DELETES experiences whose RECENCY (time-decay age) is "
+                    "below this. NOT match quality - raising it deletes older "
+                    "rows regardless of how good they are."
+                ),
                 ge=0.0,
                 le=1.0,
             ),
@@ -1012,7 +1022,13 @@ def create_server(db_path: str) -> FastMCP:
         min_relevance: Annotated[
             float,
             Field(
-                description="Minimum relevance 0.0-1.0",
+                description=(
+                    "Minimum score 0.0-1.0. THE SCALE DIFFERS BY ROW TYPE: "
+                    "it gates node rows on match strength (bm25, or embedding "
+                    "cosine when semantic recall is on) and experience rows on "
+                    "recency (time-decay). One number, two meanings - read "
+                    "each row's `relevance_kind` to see which it got."
+                ),
                 ge=0.0,
                 le=1.0,
             ),
@@ -1198,6 +1214,7 @@ def create_server(db_path: str) -> FastMCP:
                 "content": e.content[:200],
                 "confidence": e.confidence,
                 "relevance": round(e.relevance(), 4),
+                "relevance_kind": RELEVANCE_KIND_RECENCY,
             }
             for e in experiences
         ]

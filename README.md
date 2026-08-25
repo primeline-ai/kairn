@@ -147,12 +147,14 @@ Start a **new** session and ask it to recall the same thing - that calls `kn_rec
 
 ```json
 {"_v": "1.0", "count": 2, "results": [
-  {"source": "node", "id": "002d9c22", "name": "Decision: we chose Postgres over SQLite for the analytics service beca", "type": "learned_decision", "description": "we chose Postgres over SQLite for the analytics service because we needed concurrent writers", "relevance": 1.0},
-  {"source": "experience", "id": "d0710c2f", "type": "decision", "content": "we chose Postgres over SQLite for the analytics service because we needed concurrent writers", "confidence": "high", "relevance": 1.0}
+  {"source": "node", "id": "002d9c22", "name": "Decision: we chose Postgres over SQLite for the analytics service beca", "type": "learned_decision", "description": "we chose Postgres over SQLite for the analytics service because we needed concurrent writers", "relevance": 1.0, "relevance_kind": "match"},
+  {"source": "experience", "id": "d0710c2f", "type": "decision", "content": "we chose Postgres over SQLite for the analytics service because we needed concurrent writers", "confidence": "high", "relevance": 1.0, "relevance_kind": "recency"}
 ]}
 ```
 
 `kn_learn` stored both a permanent graph node and a decaying experience (high confidence does both, see [Confidence routing](#decay-model)); `kn_recall` found both from a three-word topic.
+
+**Read `relevance_kind` before you read `relevance`.** Both rows above show `1.0` and they do not mean the same thing. `match` is lexical match strength (bm25); the experience's `recency` is time-decay - it is 1.0 because the row was created seconds ago, not because it matched well. A third value, `similarity`, is embedding cosine on the semantic-recall path, and `unscored` marks a row the surface had no ranking for and filled in with a constant. The numbers are not comparable across kinds, so do not sort a mixed result set on `relevance` alone. Same caution for `min_relevance` on `kn_recall`: it gates nodes on match strength and experiences on recency, one number against two scales. On `kn_memories` and `kn_prune`, which see experiences only, it is recency - and on `kn_prune` it **deletes**.
 
 Run `kairn status ~/brain` any time as a smoke test - if it prints a JSON stats block (nodes/edges/experiences counts), the workspace is healthy. Want a scripted tour of every core feature instead of doing it by hand? Run `kairn demo ~/brain` - it walks through node creation, querying, experience saving, learning, recall, and context in about 30 seconds.
 

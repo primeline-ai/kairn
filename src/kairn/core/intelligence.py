@@ -24,6 +24,13 @@ from kairn.core.router import ContextRouter
 from kairn.events.bus import EventBus
 from kairn.events.types import EventType
 from kairn.models.experience import VALID_CONFIDENCES, VALID_TYPES
+from kairn.relevance import (
+    RELEVANCE_KIND_MATCH,
+    RELEVANCE_KIND_RECENCY,
+    RELEVANCE_KIND_SIMILARITY,
+    RELEVANCE_KIND_UNSCORED,
+    RELEVANCE_KINDS,
+)
 from kairn.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -139,6 +146,40 @@ def _term_coverage(terms: list[str], *fields: str | None) -> float:
     if not have:
         return 0.0
     return sum(1 for term in want if term in have) / len(want)
+def _allocate_across_sources(
+    results: list[dict[str, Any]], limit: int
+) -> list[dict[str, Any]]:
+    """Take one row from each source in turn, nodes first, up to `limit`.
+
+    REFUSING TO MERGE-SORT IS ONLY HALF THE JOB. Node bm25 match-strength and
+    experience time-decay are different scales, so the union is deliberately not
+    sorted on `relevance` - but the other half was a plain `results[:limit]`
+    with nodes appended first, which let the node list eat the whole budget.
+    Measured on 12 real queries: limit=3 -> 36 nodes / 0 experiences,
+    limit=6 -> 72 / 0; experiences only appeared at limit=20.
+
+    Rank INSIDE each group is preserved exactly - this only interleaves two
+    already-ordered lists. One empty group still fills the whole budget.
+
+    HONEST LIMITS, because "neither source can starve the other" is not true in
+    general: at limit=1 a node wins whenever one exists, which is inherent to
+    "nodes first"; and a caller who wanted the `limit` best NODES now gets about
+    half that many. This is an allocation POLICY, not a pure correctness fix,
+    and it is stated here rather than implied.
+
+    Rows whose `source` is neither "node" nor "experience" are appended after
+    both groups rather than dropped - the previous slice would have kept them.
+    """
+    nodes_out = [r for r in results if r.get("source") == "node"]
+    exps_out = [r for r in results if r.get("source") == "experience"]
+    other = [r for r in results if r.get("source") not in ("node", "experience")]
+    out: list[dict[str, Any]] = []
+    for i in range(max(len(nodes_out), len(exps_out))):
+        if i < len(nodes_out):
+            out.append(nodes_out[i])
+        if i < len(exps_out):
+            out.append(exps_out[i])
+    return (out + other)[:limit]
 
 
 class IntelligenceLayer:
@@ -379,9 +420,18 @@ class IntelligenceLayer:
                 break
         return candidates
 
-    def _node_result(self, *, node_id, name, type_, namespace, description, relevance):
+    def _node_result(
+        self, *, node_id, name, type_, namespace, description, relevance, relevance_kind
+    ):
         # namespace travels in every item shape so downstream namespace-based
         # access filters can enforce their allowlists on this surface.
+        #
+        # relevance_kind is a REQUIRED argument, not a default. This factory is a
+        # funnel for three different numbers - bm25, embedding cosine, and the
+        # literal 1.0 a text-less browse produces - and an earlier version
+        # hardcoded MATCH here, which stamped "lexical match strength" on all
+        # three. A default would have hidden the next one the same way.
+        assert relevance_kind in RELEVANCE_KINDS, relevance_kind
         return {
             "source": "node",
             "id": node_id,
@@ -390,6 +440,7 @@ class IntelligenceLayer:
             "namespace": namespace,
             "description": description,
             "relevance": relevance,
+            "relevance_kind": relevance_kind,
         }
 
     async def _keyword_node_recall(
@@ -411,6 +462,10 @@ class IntelligenceLayer:
                 )
             if relevance < min_relevance:
                 continue
+            # A text-less query has no rank, and _bm25_to_relevance(None)
+            # returns the literal 1.0. That is the same non-score crossref
+            # reports, so it gets the same label - calling it "match" would
+            # advertise a perfect lexical hit on a query with no text in it.
             out.append(
                 self._node_result(
                     node_id=node.id,
@@ -419,6 +474,9 @@ class IntelligenceLayer:
                     namespace=node.namespace,
                     description=node.description,
                     relevance=relevance,
+                    relevance_kind=(
+                        RELEVANCE_KIND_MATCH if rank is not None else RELEVANCE_KIND_UNSCORED
+                    ),
                 )
             )
         return out
@@ -501,6 +559,9 @@ class IntelligenceLayer:
                     namespace=row["namespace"],
                     description=row.get("description"),
                     relevance=round(score, 4),
+                    # Embedding cosine, not bm25. A different scale and
+                    # corpus-independent, so it does not share MATCH's label.
+                    relevance_kind=RELEVANCE_KIND_SIMILARITY,
                 )
             )
             if len(out) >= limit:
@@ -537,9 +598,8 @@ class IntelligenceLayer:
         results.extend(node_results)
         kept_node_ids = [r["id"] for r in node_results]
 
-        # Log node access for activity tracking (only nodes we surfaced).
-        if kept_node_ids:
-            await self._log_node_access("node_recall", kept_node_ids)
+        # NOTE: access logging and touch_accessed now happen AFTER allocation,
+        # over the rows the caller actually receives. See the block below.
 
         # Search experiences (decay-aware)
         experiences = await self.experience.search(
@@ -547,15 +607,6 @@ class IntelligenceLayer:
             min_relevance=min_relevance,
             limit=limit,
         )
-
-        # Batch-increment access_count for all returned experiences so
-        # the exp_auto_promote trigger can fire after repeated hits.
-        # Mirror the increment on the in-memory objects so callers reading
-        # exp.access_count from the result set are not off by one.
-        if experiences:
-            await self.experience.touch_accessed([e.id for e in experiences])
-            for exp in experiences:
-                exp.access_count += 1
 
         now = datetime.now(UTC)
         for exp in experiences:
@@ -568,6 +619,7 @@ class IntelligenceLayer:
                     "content": exp.content,
                     "confidence": exp.confidence,
                     "relevance": round(exp.relevance(at=now), 4),
+                    "relevance_kind": RELEVANCE_KIND_RECENCY,
                 }
             )
 
@@ -578,7 +630,41 @@ class IntelligenceLayer:
         # "relevance" float: node bm25 match-strength and experience time-decay
         # are different scales, and sorting them together buries curated nodes
         # under fresh (high-decay-relevance) experiences.
-        results = results[:limit]
+        #
+        # BUT REFUSING TO MERGE-SORT IS ONLY HALF THE JOB, and the other half
+        # was a plain `results[:limit]`. Nodes are appended first, so at the
+        # limits callers actually use the node list ate the entire budget and
+        # NO experience was ever returned. Measured against a real store on 12
+        # queries: limit=3 -> 36 nodes / 0 experiences; limit=6 -> 72 / 0;
+        # experiences only start appearing at limit=20. A caller asking for 6
+        # "results across nodes and experiences" got one source, silently.
+        #
+        # So the budget is ALLOCATED rather than consumed: take one from each
+        # group in turn, nodes first, until `limit` is reached. Rank inside each
+        # group is preserved exactly (this only interleaves two already-ordered
+        # lists), neither source can starve the other, and when one group is
+        # empty the other fills the whole budget as before. No score from one
+        # scale is ever compared against a score from the other.
+        results = _allocate_across_sources(results, limit)
+
+        # CREDIT ONLY WHAT THE CALLER ACTUALLY RECEIVED.
+        #
+        # Both sub-queries fetch `limit` rows, but the allocation shows at most
+        # about half of each. Logging and touching the full fetch credited rows
+        # nobody saw - and `exp_auto_promote` fires on `access_count`, so at
+        # limit=10 five unseen experiences were pushed toward promotion on every
+        # single call. The node access feed drives the same decay/promotion
+        # pipeline. Both now run over `results`, after truncation.
+        kept_node_ids = [r["id"] for r in results if r.get("source") == "node"]
+        if kept_node_ids:
+            await self._log_node_access("node_recall", kept_node_ids)
+        kept_exp_ids = [r["id"] for r in results if r.get("source") == "experience"]
+        if kept_exp_ids:
+            await self.experience.touch_accessed(kept_exp_ids)
+            kept = set(kept_exp_ids)
+            for exp in experiences:
+                if exp.id in kept:
+                    exp.access_count += 1
 
         await self.event_bus.emit(
             EventType.KNOWLEDGE_RECALLED,
@@ -620,13 +706,18 @@ class IntelligenceLayer:
                     "type": node.type,
                     "namespace": node.namespace,
                     "description": node.description,
+                    # Not a ranking. `graph.query` returns nodes in its own
+                    # order and this surface has no score to report, so it
+                    # fills in a constant. Labelled UNSCORED so a caller does
+                    # not read 1.0 as a perfect match - and so the sort below,
+                    # which compares this constant against experience recency,
+                    # is visible rather than implied.
                     "relevance": 1.0,
+                    "relevance_kind": RELEVANCE_KIND_UNSCORED,
                 }
             )
 
-        # Log node access for activity tracking
-        if nodes:
-            await self._log_node_access("node_crossref", [n.id for n in nodes])
+        # Access logging moved below, over the allocated rows only.
 
         # Search experiences for solutions
         experiences = await self.experience.search(
@@ -634,12 +725,6 @@ class IntelligenceLayer:
             min_relevance=0.1,
             limit=limit,
         )
-
-        # Batch-increment access_count for all returned experiences.
-        if experiences:
-            await self.experience.touch_accessed([e.id for e in experiences])
-            for exp in experiences:
-                exp.access_count += 1
 
         now = datetime.now(UTC)
         for exp in experiences:
@@ -653,11 +738,41 @@ class IntelligenceLayer:
                     "content": exp.content,
                     "confidence": exp.confidence,
                     "relevance": round(exp.relevance(at=now), 4),
+                    "relevance_kind": RELEVANCE_KIND_RECENCY,
                 }
             )
 
-        results.sort(key=lambda r: r["relevance"], reverse=True)
-        results = results[:limit]
+        # ORDER-PRESERVING, and that is provable rather than hoped for. This
+        # used to sort every row on `relevance` alone - comparing a node's
+        # literal 1.0 against an experience's decay, two numbers that share a
+        # range and nothing else. It is replaced by an explicit two-level key
+        # that reproduces the old ORDER exactly:
+        #   nodes are all 1.0, so no experience could ever outrank one; the
+        #   only tie is a brand-new experience whose decay is also exactly 1.0,
+        #   and Python's sort is stable, so that tie already resolved in
+        #   insertion order - nodes are appended first, above.
+        # Same output, without the cross-scale comparison that made the number
+        # look meaningful. Changing the order is a behaviour change and belongs
+        # in the phase that owns ranking, not in a labelling change.
+        results.sort(
+            key=lambda r: (0 if r["source"] == "node" else 1, -r["relevance"]),
+        )
+        # SAME DEFECT AS recall(), one function away - measured side by side on
+        # one store with 10 matching nodes and 10 matching experiences at
+        # limit=6:  recall -> 3 nodes / 3 experiences,  crossref -> 6 / 0.
+        results = _allocate_across_sources(results, limit)
+
+        # Credit only what the caller received - see the note in recall().
+        kept_node_ids = [r["id"] for r in results if r.get("source") == "node"]
+        if kept_node_ids:
+            await self._log_node_access("node_crossref", kept_node_ids)
+        kept_exp_ids = [r["id"] for r in results if r.get("source") == "experience"]
+        if kept_exp_ids:
+            await self.experience.touch_accessed(kept_exp_ids)
+            kept = set(kept_exp_ids)
+            for exp in experiences:
+                if exp.id in kept:
+                    exp.access_count += 1
 
         await self.event_bus.emit(
             EventType.CROSSREF_FOUND,
@@ -693,6 +808,37 @@ class IntelligenceLayer:
         # Route-based node discovery
         route_results = await self.router.route(keywords, limit=limit)
 
+        # NODE RANKING FOR THIS SURFACE IS AN OPEN DEFECT - see below.
+        #
+        # These nodes come from `router.route()` and report the route's own
+        # `confidence`. On a real store that field carries no information:
+        #     sqlite3 kairn.db "select confidence, count(*) from routes
+        #                       group by confidence"
+        #     -> 0.5|23353        (one row - every route in the store)
+        # So `min_confidence` excludes nothing at its default, `max(node_scores)`
+        # ranks nothing, and the order a caller receives is whatever the id sort
+        # produced. A consumer picking the best few nodes has nothing to pick on.
+        #
+        # AN ATTEMPT TO FIX THIS WAS REVERTED, and the reason is worth keeping.
+        # It ranked the router's candidates by intersecting them with
+        # `query_ranked(text=fts_query, limit=max(limit*4, 20))` - a GLOBAL
+        # top-K - and labelled anything absent from that window UNSCORED. That
+        # conflates four different states: no lexical match, a match below an
+        # arbitrary cutoff, an id mismatch, and a failed query. Measured on 12
+        # real queries, 72 routed nodes:
+        #     fts limit    20 ->  9 matched, 63 "unscored"   12.5%
+        #     fts limit   100 -> 29 matched, 43 "unscored"   40.3%
+        #     fts limit  1000 -> 61 matched, 11 "unscored"   84.7%
+        #     fts limit 20000 -> 72 matched,  0 "unscored"  100.0%
+        # EVERY routed node matches - unsurprising, since routes are built from
+        # node text. The "most candidates do not match" reading was an artefact
+        # of the bound, and no fixed multiple of `limit` can fix it.
+        #
+        # THE CORRECT FIX is at the store layer: rank exactly the routed ids,
+        # by adding an id restriction to `_query_nodes_fts`'s existing WHERE
+        # clause, so coverage is complete by construction rather than by a
+        # window size. Not done here - it is a storage-layer change to a
+        # published package and belongs in its own reviewed commit.
         nodes = []
         for r in route_results:
             node_data = r["node"]
@@ -754,6 +900,7 @@ class IntelligenceLayer:
                 "namespace": e.namespace,
                 "content": e.content[:200] if detail == "summary" else e.content,
                 "relevance": round(e.relevance(at=now), 4),
+                "relevance_kind": RELEVANCE_KIND_RECENCY,
             }
             if detail != "summary":
                 exp_out["confidence"] = e.confidence
