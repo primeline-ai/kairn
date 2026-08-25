@@ -373,3 +373,110 @@ async def test_soft_deleted_candidates_do_not_reach_the_caller(engine, store):
 
     result = await engine.context(keywords="harpsichord tuning", limit=5)
     assert [n["id"] for n in result["nodes"]] == ["live"]
+
+
+# --- what external review found in the first version of this change -------
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_id_spanning_two_chunks_does_not_duplicate_a_row(
+    store, monkeypatch
+):
+    """`IN (...)` is set membership; chunk-and-extend is not.
+
+    With the same id in two different chunks the naive merge returned the row
+    twice, which under `limit` displaces a different node entirely. Chunk size
+    is forced to 2 so the duplicate genuinely lands in separate queries.
+    """
+    for nid in ("a", "b", "c"):
+        await _node(store, nid, f"Harpsichord {nid}", "harpsichord tuning")
+    monkeypatch.setattr(sqlite_store_module, "_MAX_ID_BINDINGS", 2)
+
+    rows = await store.query_nodes(
+        text='"harpsichord" OR "tuning"', node_ids=["a", "c", "a", "b"], limit=3
+    )
+    ids = [r["id"] for r in rows]
+    assert sorted(ids) == ["a", "b", "c"], ids
+    assert len(ids) == len(set(ids)), f"a row came back twice: {ids}"
+
+
+@pytest.mark.asyncio
+async def test_equal_ranks_order_the_same_however_the_list_is_chunked(
+    store, monkeypatch
+):
+    """Sorting on `rank` alone is stable over the CONCATENATION order, which
+    differs between one chunk and many. Identical documents give identical
+    ranks, so this fixture has nothing BUT ties."""
+    ids = []
+    for i in range(9):
+        nid = f"t{i}"
+        await _node(store, nid, "Harpsichord", "harpsichord tuning")
+        ids.append(nid)
+    # The id list is REVERSED on purpose. Chunks are cut from it in order and
+    # each chunk comes back in the table's own order, so with the list in
+    # insertion order the concatenation happens to match the single-shot result
+    # and the missing tie-break is invisible. That fixture was tried first and
+    # let the mutant through.
+    probe = list(reversed(ids))
+    single = [r["id"] for r in await store.query_nodes(
+        text='"harpsichord" OR "tuning"', node_ids=probe, limit=100)]
+    ranks = [r["rank"] for r in await store.query_nodes(
+        text='"harpsichord" OR "tuning"', node_ids=probe, limit=100)]
+    assert len(set(ranks)) == 1, f"fixture has no ties, so it tests nothing: {ranks}"
+
+    monkeypatch.setattr(sqlite_store_module, "_MAX_ID_BINDINGS", 2)
+    chunked = [r["id"] for r in await store.query_nodes(
+        text='"harpsichord" OR "tuning"', node_ids=probe, limit=100)]
+    assert chunked == single, f"chunked {chunked} != single {single}"
+
+
+@pytest.mark.asyncio
+async def test_route_at_limit_zero_returns_nothing(store):
+    """A deliberate fix, not an accident: the old loop appended before testing
+    the count, so asking for zero nodes returned one."""
+    bus = EventBus()
+    router = ContextRouter(store, bus)
+    await _node(store, "z", "Harpsichord", "harpsichord")
+    await store.upsert_route("harpsichord", ["z"], 0.5)
+    assert await router.route("harpsichord", limit=0) == []
+    assert await router.route("harpsichord", limit=-1) == []
+    assert len(await router.route("harpsichord", limit=1)) == 1
+
+
+@pytest.mark.asyncio
+async def test_fallback_fts_path_is_ordered_by_the_relevance_it_reports(engine, store):
+    """When the router finds nothing, `context()` falls back to a corpus-wide
+    FTS search. That path reports a coverage-scaled relevance, so it has to be
+    SORTED by it - otherwise the order is raw bm25 and disagrees with the
+    number beside each node.
+
+    No route is created at all here, which is what forces the fallback.
+
+    The fixture is built so coverage genuinely REVERSES the raw bm25 order -
+    two of the three query terms are common (30 padding documents carry them)
+    and one is rare, so `narrow` wins on raw bm25 by hammering the rare term
+    while `broad` wins on coverage by answering all three. Measured on this
+    exact fixture:
+
+        narrow   raw 0.4577  coverage 0.333  scaled 0.1526
+        broad    raw 0.3652  coverage 1.000  scaled 0.3652
+
+    A fixture where the two orders agree makes the assertion below vacuous.
+    """
+    await _node(store, "narrow", "Narrow", "werckmeister werckmeister werckmeister")
+    await _node(store, "broad", "Broad", "werckmeister alpha beta")
+    for i in range(30):
+        await _node(store, f"pad{i}", f"Pad {i}", "alpha beta routine log")
+
+    result = await engine.context(keywords="werckmeister alpha beta", limit=5)
+    assert result["nodes"], "the fallback returned nothing"
+    scores = [n["relevance"] for n in result["nodes"]]
+    assert scores == sorted(scores, reverse=True), (
+        f"reported relevance disagrees with the returned order: "
+        f"{[(n['id'], n['relevance']) for n in result['nodes']]}"
+    )
+    assert len(set(scores)) > 1, "no spread - the ordering assertion proves nothing"
+    ids = [n["id"] for n in result["nodes"]]
+    assert ids.index("broad") < ids.index("narrow"), (
+        f"raw bm25 order survived the coverage scaling: {ids}"
+    )

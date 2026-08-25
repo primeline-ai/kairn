@@ -75,6 +75,14 @@ class ContextRouter:
         Collect-until-limit instead of slice-then-fetch: soft-deleted ids stay
         in route arrays deliberately (restore_node keeps them routable), but
         they must not starve result slots (weakness-audit rank 62).
+
+        ONE DELIBERATE BEHAVIOUR CHANGE, at `limit <= 0`. The loop this replaces
+        appended a node BEFORE testing the count, so `route(limit=0)` returned
+        one node - it asked for nothing and got something. That is fixed here
+        rather than reproduced, and it is called out because the surrounding
+        refactor otherwise preserves `route()` exactly: external review of the
+        first version caught the blanket claim of "no behaviour change" being
+        false on this input. Pinned by `test_route_at_limit_zero_returns_nothing`.
         """
         skip = skip or set()
         results: list[dict[str, Any]] = []

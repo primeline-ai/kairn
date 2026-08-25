@@ -537,9 +537,30 @@ class SQLiteStore(StorageBackend):
 
         `limit`/`offset` are applied AFTER the merge, never per chunk - applying
         them per chunk would return a different (and wrong) set.
+
+        TWO THINGS THE MERGE NEEDS THAT THE CHUNK LOOP DOES NOT GIVE IT, both
+        found by external review of the first version of this method:
+
+        * `IN (...)` is SET membership, so one unchunked query cannot return a
+          row twice however often its id appears in the list. Chunk-and-extend
+          is a MULTISET: a duplicate id spanning two chunks returns two rows,
+          which under `limit` displaces a different node entirely. The ids are
+          therefore deduplicated first, keeping first-occurrence order.
+        * Equal ranks are common on small corpora. Sorting on `rank` alone is
+          stable over the CONCATENATION order, which differs between one chunk
+          and many. The sort key carries `id` as a tie-break so the result is
+          the same however the list was split.
+
+        HONEST LIMIT: the chunks are separate statements, so a writer committing
+        between them can produce a merged result no single snapshot contained.
+        Kairn assumes single-process-per-workspace (see `_migrate_schema`), and
+        chunking only engages above `_MAX_ID_BINDINGS` candidates, but
+        "equivalent to one query" holds for a fixed snapshot, not under
+        concurrent writes.
         """
         if not node_ids:
             return []
+        node_ids = list(dict.fromkeys(node_ids))
 
         conditions = ["nodes.deleted_at IS NULL"]
         tail_params: list[Any] = []
@@ -570,7 +591,7 @@ class SQLiteStore(StorageBackend):
             rows.extend(await cursor.fetchall())
 
         out = [_row_to_dict(row) for row in rows]
-        out.sort(key=lambda r: r["rank"])
+        out.sort(key=lambda r: (r["rank"], r["id"]))
         return out[offset : offset + limit]
 
     async def count_nodes(self, *, namespace: str | None = None) -> int:

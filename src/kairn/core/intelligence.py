@@ -928,15 +928,28 @@ class IntelligenceLayer:
             ):
                 nodes.append(_node_out(r["node"], r["confidence"], 0.0, RELEVANCE_KIND_UNSCORED))
 
-        # Also search by FTS5 if the router found nothing
+        # Also search by FTS5 if the router found nothing.
+        #
+        # This path has NO candidate set to restrict to, so unlike the ranked
+        # path above it genuinely is a top-K of the whole corpus - `limit` rows
+        # in raw bm25 order. Coverage scaling can only REORDER those rows, never
+        # pull in a row that bm25 ranked lower, so which rows appear here does
+        # depend on `limit`. Say so rather than implying the same completeness.
+        # The re-sort is not optional: without it the returned order is raw bm25
+        # while the reported `relevance` is the coverage-scaled score, and the
+        # two disagree (external review, first version of this method).
         if not nodes and fts_query:
             ranked = await self.graph.query_ranked(text=fts_query, limit=limit)
+            fallback: list[tuple[float, Node]] = []
             for n, rank in ranked:
                 relevance = _bm25_to_relevance(rank)
                 if terms:
                     relevance = round(
                         relevance * _term_coverage(terms, n.name, n.description), 4
                     )
+                fallback.append((relevance, n))
+            fallback.sort(key=lambda pair: pair[0], reverse=True)
+            for relevance, n in fallback:
                 nodes.append(_node_out(n.model_dump(), 0.5, relevance, RELEVANCE_KIND_MATCH))
 
         # Log node access for activity tracking
