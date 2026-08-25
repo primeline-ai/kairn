@@ -65,6 +65,42 @@ def _bm25_to_relevance(rank: float | None) -> float:
     return round(score / (score + _BM25_RELEVANCE_MIDPOINT), 4)
 
 
+def _allocate_across_sources(
+    results: list[dict[str, Any]], limit: int
+) -> list[dict[str, Any]]:
+    """Take one row from each source in turn, nodes first, up to `limit`.
+
+    REFUSING TO MERGE-SORT IS ONLY HALF THE JOB. Node bm25 match-strength and
+    experience time-decay are different scales, so the union is deliberately not
+    sorted on `relevance` - but the other half was a plain `results[:limit]`
+    with nodes appended first, which let the node list eat the whole budget.
+    Measured on 12 real queries: limit=3 -> 36 nodes / 0 experiences,
+    limit=6 -> 72 / 0; experiences only appeared at limit=20.
+
+    Rank INSIDE each group is preserved exactly - this only interleaves two
+    already-ordered lists. One empty group still fills the whole budget.
+
+    HONEST LIMITS, because "neither source can starve the other" is not true in
+    general: at limit=1 a node wins whenever one exists, which is inherent to
+    "nodes first"; and a caller who wanted the `limit` best NODES now gets about
+    half that many. This is an allocation POLICY, not a pure correctness fix,
+    and it is stated here rather than implied.
+
+    Rows whose `source` is neither "node" nor "experience" are appended after
+    both groups rather than dropped - the previous slice would have kept them.
+    """
+    nodes_out = [r for r in results if r.get("source") == "node"]
+    exps_out = [r for r in results if r.get("source") == "experience"]
+    other = [r for r in results if r.get("source") not in ("node", "experience")]
+    out: list[dict[str, Any]] = []
+    for i in range(max(len(nodes_out), len(exps_out))):
+        if i < len(nodes_out):
+            out.append(nodes_out[i])
+        if i < len(exps_out):
+            out.append(exps_out[i])
+    return (out + other)[:limit]
+
+
 class IntelligenceLayer:
     """Unified intelligence operations over graph, experience, and routing."""
 
@@ -476,9 +512,8 @@ class IntelligenceLayer:
         results.extend(node_results)
         kept_node_ids = [r["id"] for r in node_results]
 
-        # Log node access for activity tracking (only nodes we surfaced).
-        if kept_node_ids:
-            await self._log_node_access("node_recall", kept_node_ids)
+        # NOTE: access logging and touch_accessed now happen AFTER allocation,
+        # over the rows the caller actually receives. See the block below.
 
         # Search experiences (decay-aware)
         experiences = await self.experience.search(
@@ -486,15 +521,6 @@ class IntelligenceLayer:
             min_relevance=min_relevance,
             limit=limit,
         )
-
-        # Batch-increment access_count for all returned experiences so
-        # the exp_auto_promote trigger can fire after repeated hits.
-        # Mirror the increment on the in-memory objects so callers reading
-        # exp.access_count from the result set are not off by one.
-        if experiences:
-            await self.experience.touch_accessed([e.id for e in experiences])
-            for exp in experiences:
-                exp.access_count += 1
 
         now = datetime.now(UTC)
         for exp in experiences:
@@ -533,15 +559,26 @@ class IntelligenceLayer:
         # lists), neither source can starve the other, and when one group is
         # empty the other fills the whole budget as before. No score from one
         # scale is ever compared against a score from the other.
-        nodes_out = [r for r in results if r["source"] == "node"]
-        exps_out = [r for r in results if r["source"] == "experience"]
-        interleaved: list[dict[str, Any]] = []
-        for i in range(max(len(nodes_out), len(exps_out))):
-            if i < len(nodes_out):
-                interleaved.append(nodes_out[i])
-            if i < len(exps_out):
-                interleaved.append(exps_out[i])
-        results = interleaved[:limit]
+        results = _allocate_across_sources(results, limit)
+
+        # CREDIT ONLY WHAT THE CALLER ACTUALLY RECEIVED.
+        #
+        # Both sub-queries fetch `limit` rows, but the allocation shows at most
+        # about half of each. Logging and touching the full fetch credited rows
+        # nobody saw - and `exp_auto_promote` fires on `access_count`, so at
+        # limit=10 five unseen experiences were pushed toward promotion on every
+        # single call. The node access feed drives the same decay/promotion
+        # pipeline. Both now run over `results`, after truncation.
+        kept_node_ids = [r["id"] for r in results if r.get("source") == "node"]
+        if kept_node_ids:
+            await self._log_node_access("node_recall", kept_node_ids)
+        kept_exp_ids = [r["id"] for r in results if r.get("source") == "experience"]
+        if kept_exp_ids:
+            await self.experience.touch_accessed(kept_exp_ids)
+            kept = set(kept_exp_ids)
+            for exp in experiences:
+                if exp.id in kept:
+                    exp.access_count += 1
 
         await self.event_bus.emit(
             EventType.KNOWLEDGE_RECALLED,
@@ -594,9 +631,7 @@ class IntelligenceLayer:
                 }
             )
 
-        # Log node access for activity tracking
-        if nodes:
-            await self._log_node_access("node_crossref", [n.id for n in nodes])
+        # Access logging moved below, over the allocated rows only.
 
         # Search experiences for solutions
         experiences = await self.experience.search(
@@ -604,12 +639,6 @@ class IntelligenceLayer:
             min_relevance=0.1,
             limit=limit,
         )
-
-        # Batch-increment access_count for all returned experiences.
-        if experiences:
-            await self.experience.touch_accessed([e.id for e in experiences])
-            for exp in experiences:
-                exp.access_count += 1
 
         now = datetime.now(UTC)
         for exp in experiences:
@@ -642,7 +671,22 @@ class IntelligenceLayer:
         results.sort(
             key=lambda r: (0 if r["source"] == "node" else 1, -r["relevance"]),
         )
-        results = results[:limit]
+        # SAME DEFECT AS recall(), one function away - measured side by side on
+        # one store with 10 matching nodes and 10 matching experiences at
+        # limit=6:  recall -> 3 nodes / 3 experiences,  crossref -> 6 / 0.
+        results = _allocate_across_sources(results, limit)
+
+        # Credit only what the caller received - see the note in recall().
+        kept_node_ids = [r["id"] for r in results if r.get("source") == "node"]
+        if kept_node_ids:
+            await self._log_node_access("node_crossref", kept_node_ids)
+        kept_exp_ids = [r["id"] for r in results if r.get("source") == "experience"]
+        if kept_exp_ids:
+            await self.experience.touch_accessed(kept_exp_ids)
+            kept = set(kept_exp_ids)
+            for exp in experiences:
+                if exp.id in kept:
+                    exp.access_count += 1
 
         await self.event_bus.emit(
             EventType.CROSSREF_FOUND,
