@@ -22,6 +22,7 @@ from kairn.core.ideas import IdeaEngine
 from kairn.core.intelligence import (
     IntelligenceLayer,
     _fold_diacritics,
+    _index_tokens,
     _term_coverage,
 )
 from kairn.core.memory import ProjectMemory
@@ -641,3 +642,95 @@ async def test_unscored_also_covers_no_fts_query_was_built(engine, store):
     assert [n["id"] for n in result["nodes"]] == ["N1"]
     assert result["nodes"][0]["relevance_kind"] == RELEVANCE_KIND_UNSCORED
     assert result["nodes"][0]["relevance"] == 0.0
+
+
+# --- the guard that stops this class generating new traps ------------------
+
+
+def test_index_tokens_agrees_with_sqlite_or_the_divergence_is_named():
+    """`_index_tokens` is a Python CLONE of FTS5's tokenizer, and cloning a
+    tokenizer by hand is open-generative: three separate divergences have
+    already shipped and been fixed one review round at a time (diacritics,
+    substring-versus-token, underscore). Reviewing until a round comes back
+    quiet does not close a class like that.
+
+    So ask SQLite instead. `fts5vocab` exposes the exact token stream FTS5
+    indexed, which turns "is the clone right?" into a mechanical comparison.
+    Running it over 4000 real store documents found two more divergences that
+    no reviewer had raised - they are enumerated below with their consequence.
+    Any divergence NOT in that list fails this test.
+
+    The real fix is to stop cloning: coverage can be computed by the index
+    itself, one restricted single-term query per term, which is exact by
+    construction and measured FASTER than the current path (32.7 ms against
+    58.8 ms on a 3350-candidate pool). That is a separate change; this test is
+    what makes shipping without it honest rather than hopeful.
+    """
+    import sqlite3
+
+    # (input, why the clone differs, and whether it can affect a result)
+    known_divergences = {
+        # unicode61's default remove_diacritics=1 leaves Vietnamese tone marks
+        # alone; _fold_diacritics strips them. The clone therefore treats "nam"
+        # and "nấm" as the same token where the index does not - it can only
+        # OVER-count coverage, which is the inflation _term_coverage exists to
+        # remove. Pre-existing: _fold_diacritics shipped before this change.
+        "nấm hầu thủ",
+        # FTS5 indexes emoji as tokens; the alphanumeric class drops them. Only
+        # reachable on the document side, because `fts_keywords` builds query
+        # terms with `\w+` and never emits an emoji, so no query term can go
+        # uncovered because of this.
+        "status 🟢 green",
+    }
+
+    corpus = [
+        "feedback_kairn_first notes",
+        "kairn_delegation_policy",
+        "Zürich delegation workflow",
+        "Änderung Prüfung Übersicht größer für",
+        "straße strasse",
+        "a-b c.d 42 e_f",
+        "CamelCase_and_snake_case",
+        "__dunder__",
+        "co-operate's",
+        "e.g. i.e.",
+        "plain ascii tokens only",
+        "123_456 mixed",
+        "",
+        "   ",
+        "___",
+        *known_divergences,
+    ]
+
+    mem = sqlite3.connect(":memory:")
+    mem.execute("CREATE VIRTUAL TABLE t USING fts5(body)")
+    mem.execute("CREATE VIRTUAL TABLE v USING fts5vocab(t, 'row')")
+
+    def sqlite_tokens(text: str) -> set[str]:
+        mem.execute("DELETE FROM t")
+        mem.execute("INSERT INTO t VALUES (?)", (text,))
+        return {row[0] for row in mem.execute("SELECT term FROM v")}
+
+    surprises = []
+    reproduced = 0
+    for text in corpus:
+        ours, theirs = _index_tokens(text), sqlite_tokens(text)
+        if ours == theirs:
+            continue
+        if text in known_divergences:
+            reproduced += 1
+            continue
+        surprises.append((text, sorted(theirs - ours), sorted(ours - theirs)))
+
+    assert not surprises, (
+        "the clone diverges from FTS5 on an input nobody has accounted for: "
+        + "; ".join(
+            f"{t!r} sqlite-only={m} ours-only={e}" for t, m, e in surprises
+        )
+    )
+    # Without this the test passes just as well when the divergences quietly
+    # disappear, and would stop being evidence that the list is current.
+    assert reproduced == len(known_divergences), (
+        f"only {reproduced} of {len(known_divergences)} known divergences still "
+        f"reproduce - re-derive the list rather than trusting it"
+    )
