@@ -100,7 +100,18 @@ def fts_keywords(text: str) -> list[str]:
     pass's on-topic gate) share the exact same filtering instead of
     re-deriving it from the quoted query string.
     """
-    words = re.findall(r"[a-zA-Z0-9_]+", text.lower())
+    # `\w+`, NOT `[a-zA-Z0-9_]+`. The ASCII class treated every accented letter
+    # as a word BOUNDARY, so a non-ASCII word was cut there and only the tail
+    # survived - usually under the 3-char floor and dropped entirely:
+    #     Ümlaut -> mlaut   Änderung -> nderung   Prüfung -> fung
+    #     größer -> (nothing)          für -> (nothing)
+    # That is fatal rather than merely lossy, because the FTS INDEX is built by
+    # SQLite's `unicode61`, which handles unicode correctly and stores
+    # `änderung` as one token. The query said `nderung`. They never met.
+    # Measured end to end before this fix: the query "Änderung" returned ZERO
+    # hits against a document containing "Änderung"; "Prüfung" zero; "größer
+    # als" zero. ASCII output is byte-identical either way.
+    words = re.findall(r"\w+", text.lower())
     return [
         w for w in words if w not in _STOP_WORDS and w not in _FTS_RESERVED and len(w) > 2
     ]
