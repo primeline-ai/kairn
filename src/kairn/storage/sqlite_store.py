@@ -614,6 +614,78 @@ class SQLiteStore(StorageBackend):
             return out[start:]
         return out[start : start + limit]
 
+    async def count_term_matches(
+        self,
+        terms: Sequence[str],
+        node_ids: Sequence[str],
+        *,
+        namespace: str | None = None,
+        node_type: str | None = None,
+        visibility: str | None = None,
+    ) -> dict[str, int]:
+        r"""For each id, how many of `terms` the FTS index actually matches it on.
+
+        THIS REPLACES A HAND-WRITTEN TOKENIZER, and that is the whole point.
+        Scoring how much of a query a document answers means deciding whether a
+        term occurs in it - which is a question about the INDEX, not about the
+        raw text. Answering it in Python means reimplementing FTS5's tokenizer,
+        and three separate divergences shipped that way before this method
+        existed: diacritic folding, substring-versus-token, and `unicode61`
+        splitting on `_` where Python's `\w` does not. A `fts5vocab` oracle then
+        found two more (Vietnamese tone marks, emoji) in one run over real data.
+        Cloning a tokenizer is open-generative; asking the index is not.
+
+        Measured against the clone on 1943 real rows: they agree on 1942. The
+        single disagreement is a Vietnamese document the clone scored at
+        coverage 1.0 and the index scores at 0.6 - the clone folds tone marks
+        the index keeps, so it counted a term as present that FTS5 does not
+        match. That is the inflation coverage weighting exists to remove.
+
+        Also cheaper than it looks: one restricted single-term query per term,
+        ids only. On the worst real pool (3350 candidates, 8 terms) that is
+        32.7ms against 58.8ms for the one OR query whose rows the clone had to
+        walk.
+
+        Ids not matched by any term are present in the result with a count of 0,
+        so a caller can distinguish "scored zero" from "not asked about".
+        """
+        counts = {node_id: 0 for node_id in dict.fromkeys(node_ids)}
+        if not counts or not terms:
+            return counts
+
+        conditions = ["nodes.deleted_at IS NULL"]
+        tail_params: list[Any] = []
+        if namespace:
+            conditions.append("nodes.namespace = ?")
+            tail_params.append(namespace)
+        if node_type:
+            conditions.append("nodes.type = ?")
+            tail_params.append(node_type)
+        if visibility:
+            conditions.append("nodes.visibility = ?")
+            tail_params.append(visibility)
+        where = " AND ".join(conditions)
+
+        ids = list(counts)
+        for term in dict.fromkeys(terms):
+            escaped = term.replace('"', '""')   # FTS5 quotes a phrase with ""
+            match = f'"{escaped}"'
+            for start in range(0, len(ids), _MAX_ID_BINDINGS):
+                chunk = ids[start : start + _MAX_ID_BINDINGS]
+                placeholders = ",".join("?" * len(chunk))
+                cursor = await self.db.execute(
+                    f"""
+                    SELECT nodes.id AS id FROM nodes_fts
+                    JOIN nodes ON nodes.rowid = nodes_fts.rowid
+                    WHERE nodes_fts MATCH ? AND {where}
+                      AND nodes.id IN ({placeholders})
+                    """,
+                    [match, *tail_params, *chunk],
+                )
+                for row in await cursor.fetchall():
+                    counts[row["id"]] += 1
+        return counts
+
     async def count_nodes(self, *, namespace: str | None = None) -> int:
         if namespace:
             cursor = await self.db.execute(

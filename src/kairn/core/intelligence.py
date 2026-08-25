@@ -490,6 +490,26 @@ class IntelligenceLayer:
             "relevance_kind": relevance_kind,
         }
 
+    async def _term_coverage_by_index(
+        self, terms: list[str], node_ids: list[str]
+    ) -> dict[str, float]:
+        """Fraction of `terms` the INDEX matches each id on.
+
+        Replaces a Python reimplementation of FTS5's tokenizer. Three
+        divergences shipped that way and were fixed one review round each, and a
+        `fts5vocab` oracle then found two more in a single pass over real data -
+        the class does not close by reviewing. Asking the index cannot diverge
+        from it. See `SQLiteStore.count_term_matches` for the measurements.
+
+        Returns {} when there is nothing to ask, which callers read as "no
+        coverage signal available" and leave the bm25 score unscaled - the same
+        thing the old code did for a term-less query.
+        """
+        if not terms or not node_ids:
+            return {}
+        counts = await self.graph.count_term_matches(terms, node_ids)
+        return {node_id: hits / len(terms) for node_id, hits in counts.items()}
+
     async def _keyword_node_recall(
         self, *, fts_query: str | None, limit: int, min_relevance: float
     ) -> list[dict[str, Any]]:
@@ -500,13 +520,14 @@ class IntelligenceLayer:
         else:
             ranked = await self.graph.query_ranked(limit=limit)
         terms = _fts_terms(fts_query)
+        coverage = await self._term_coverage_by_index(
+            terms, [node.id for node, _ in ranked]
+        )
         out: list[dict[str, Any]] = []
         for node, rank in ranked:
             relevance = _bm25_to_relevance(rank)
-            if terms:
-                relevance = round(
-                    relevance * _term_coverage(terms, node.name, node.description), 4
-                )
+            if coverage:
+                relevance = round(relevance * coverage.get(node.id, 0.0), 4)
             if relevance < min_relevance:
                 continue
             # A text-less query has no rank, and _bm25_to_relevance(None)
@@ -946,13 +967,14 @@ class IntelligenceLayer:
                 node_ids=list(candidates),
                 limit=len(candidates),
             )
+            coverage = await self._term_coverage_by_index(
+                terms, [node.id for node, _ in ranked]
+            )
             scored: list[tuple[float, Node]] = []
             for node, rank in ranked:
                 relevance = _bm25_to_relevance(rank)
-                if terms:
-                    relevance = round(
-                        relevance * _term_coverage(terms, node.name, node.description), 4
-                    )
+                if coverage:
+                    relevance = round(relevance * coverage.get(node.id, 0.0), 4)
                 scored.append((relevance, node))
             scored.sort(key=lambda pair: pair[0], reverse=True)
             for relevance, node in scored[:limit]:
@@ -1002,13 +1024,14 @@ class IntelligenceLayer:
         # two disagree (external review, first version of this method).
         if not nodes and fts_query:
             ranked = await self.graph.query_ranked(text=fts_query, limit=limit)
+            coverage = await self._term_coverage_by_index(
+                terms, [n.id for n, _ in ranked]
+            )
             fallback: list[tuple[float, Node]] = []
             for n, rank in ranked:
                 relevance = _bm25_to_relevance(rank)
-                if terms:
-                    relevance = round(
-                        relevance * _term_coverage(terms, n.name, n.description), 4
-                    )
+                if coverage:
+                    relevance = round(relevance * coverage.get(n.id, 0.0), 4)
                 fallback.append((relevance, n))
             fallback.sort(key=lambda pair: pair[0], reverse=True)
             for relevance, n in fallback:

@@ -734,3 +734,104 @@ def test_index_tokens_agrees_with_sqlite_or_the_divergence_is_named():
         f"only {reproduced} of {len(known_divergences)} known divergences still "
         f"reproduce - re-derive the list rather than trusting it"
     )
+
+
+# --- coverage computed by the index, not by a clone of its tokenizer -------
+
+
+@pytest.mark.asyncio
+async def test_coverage_no_longer_over_counts_vietnamese_tone_marks(engine, store):
+    """The divergence the oracle found, now fixed by asking the index.
+
+    `unicode61`'s default `remove_diacritics=1` deliberately leaves Vietnamese
+    tone marks alone, so a document holding the toned form is NOT matched by the
+    toneless query term. The Python clone folded both to the same string and
+    counted the term as covered - inflating exactly what coverage weighting
+    exists to deflate. Measured on the real store, one document scored 1.0 by
+    the clone and 0.6 by the index.
+
+    `toned` matches only the two ASCII terms; `plain` matches all three.
+    """
+    ids = []
+    for i in range(12):
+        nid = f"pad{i:02d}"
+        await _node(store, nid, f"Pilz {i}", "routine unrelated bookkeeping")
+        ids.append(nid)
+    await _node(store, "toned", "Pilz kognitive nấm", "notes")
+    await _node(store, "plain", "Pilz kognitive nam", "notes")
+    ids += ["toned", "plain"]
+    await store.upsert_route("pilz", ids, 0.5)
+
+    # Ground truth straight from FTS5, so the expectation is not a rewrite of
+    # the code under test.
+    counts = await store.count_term_matches(["nam", "kognitive", "pilz"], ["toned", "plain"])
+    assert counts["plain"] == 3, counts
+    assert counts["toned"] == 2, f"FTS5 matched the toneless term against a toned token: {counts}"
+
+    result = await engine.context(keywords="nam kognitive pilz", limit=2)
+    by_id = {n["id"]: n for n in result["nodes"]}
+    assert "plain" in by_id and "toned" in by_id, list(by_id)
+    assert by_id["plain"]["relevance"] > by_id["toned"]["relevance"], (
+        f"the toned document was scored as if it answered the toneless term: "
+        f"{[(n['id'], n['relevance']) for n in result['nodes']]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_count_term_matches_reports_zero_rather_than_omitting(store):
+    """A caller has to tell "scored zero" from "not asked about"."""
+    await _node(store, "hit", "Harpsichord", "harpsichord tuning")
+    await _node(store, "miss", "Diesel", "injector torque")
+    counts = await store.count_term_matches(["harpsichord", "tuning"], ["hit", "miss"])
+    assert counts == {"hit": 2, "miss": 0}
+    assert await store.count_term_matches([], ["hit"]) == {"hit": 0}
+    assert await store.count_term_matches(["harpsichord"], []) == {}
+
+
+@pytest.mark.asyncio
+async def test_count_term_matches_chunks_without_losing_or_duplicating(store, monkeypatch):
+    ids = []
+    for i in range(9):
+        nid = f"c{i}"
+        await _node(store, nid, f"Harpsichord {i}", "harpsichord tuning")
+        ids.append(nid)
+    single = await store.count_term_matches(["harpsichord", "tuning"], ids)
+    monkeypatch.setattr(sqlite_store_module, "_MAX_ID_BINDINGS", 2)
+    chunked = await store.count_term_matches(["harpsichord", "tuning"], ids)
+    assert chunked == single == {nid: 2 for nid in ids}
+
+
+@pytest.mark.asyncio
+async def test_count_term_matches_survives_a_quote_in_a_term(store):
+    """Terms reach FTS5 inside a quoted phrase, so an embedded quote would
+    otherwise close it early and produce a syntax error or a different query."""
+    await _node(store, "q1", 'Harpsichord', "harpsichord tuning")
+    counts = await store.count_term_matches(['har"psichord', "tuning"], ["q1"])
+    assert counts["q1"] >= 1, counts
+
+
+@pytest.mark.asyncio
+async def test_coverage_is_a_fraction_of_TERMS_and_never_exceeds_one(engine, store):
+    """The denominator is the number of query TERMS, not the number of
+    candidates.
+
+    Getting that wrong is invisible to every ordering test in this file,
+    because the candidate count is the same for every node in one call - a
+    uniform scale factor cannot reorder anything. It is not invisible to
+    `min_relevance`, which compares against an absolute number, so the value is
+    asserted directly here. A mutant swapping the denominator survived the whole
+    suite until this existed.
+    """
+    await _node(store, "all3", "Harpsichord temperament tuning", "notes")
+    await _node(store, "two", "Harpsichord tuning", "notes")
+
+    # THREE terms, TWO ids. Equal counts would make the wrong denominator an
+    # equivalent mutant - the first version of this test used three of each and
+    # the mutant walked straight through it.
+    coverage = await engine._term_coverage_by_index(
+        ["harpsichord", "temperament", "tuning"], ["all3", "two"]
+    )
+    assert coverage == {"all3": 1.0, "two": pytest.approx(2 / 3)}
+    assert all(0.0 <= v <= 1.0 for v in coverage.values()), coverage
+    assert await engine._term_coverage_by_index([], ["all3"]) == {}
+    assert await engine._term_coverage_by_index(["harpsichord"], []) == {}

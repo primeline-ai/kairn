@@ -140,6 +140,28 @@ class GraphEngine:
             ranked.append((Node(**row), rank))
         return ranked
 
+    async def count_term_matches(
+        self,
+        terms: Sequence[str],
+        node_ids: Sequence[str],
+        *,
+        namespace: str | None = None,
+        node_type: str | None = None,
+        visibility: str | None = None,
+    ) -> dict[str, int]:
+        """How many of `terms` the INDEX matches each id on.
+
+        The point of asking the store rather than tokenizing in Python: see
+        `SQLiteStore.count_term_matches`.
+        """
+        return await self.store.count_term_matches(
+            terms,
+            node_ids,
+            namespace=namespace,
+            node_type=node_type,
+            visibility=visibility,
+        )
+
     async def connect(
         self,
         source_id: str,

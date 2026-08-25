@@ -61,6 +61,22 @@ class StorageBackend(ABC):
         """
 
     @abstractmethod
+    async def count_term_matches(
+        self,
+        terms: Sequence[str],
+        node_ids: Sequence[str],
+        *,
+        namespace: str | None = None,
+        node_type: str | None = None,
+        visibility: str | None = None,
+    ) -> dict[str, int]:
+        """For each id, how many of `terms` the FTS index matches it on.
+
+        Ids matched by nothing are present with a count of 0, so a caller can
+        tell "scored zero" from "not asked about".
+        """
+
+    @abstractmethod
     async def count_nodes(self, *, namespace: str | None = None) -> int:
         """Count non-deleted nodes."""
 
