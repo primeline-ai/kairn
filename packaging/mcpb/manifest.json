@@ -1,0 +1,48 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
+  "manifest_version": "0.4",
+  "name": "kairn",
+  "display_name": "Kairn",
+  "version": "0.2.1",
+  "description": "Context-aware knowledge engine for AI - memory, graph, intelligent routing.",
+  "long_description": "Kairn is an air-gapped, zero-dependency knowledge engine exposed over MCP. It stores decisions, patterns, gotchas and preferences as a queryable graph with full-text recall, so an agent can retrieve prior context before acting and save what it learns afterwards. All data stays in a local SQLite workspace on the user's machine.",
+  "author": {
+    "name": "PrimeLine",
+    "url": "https://primeline.cc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/primeline-ai/kairn"
+  },
+  "homepage": "https://github.com/primeline-ai/kairn",
+  "documentation": "https://github.com/primeline-ai/kairn#readme",
+  "support": "https://github.com/primeline-ai/kairn/issues",
+  "license": "MIT",
+  "keywords": ["mcp", "memory", "knowledge-graph", "ai", "claude", "recall"],
+  "server": {
+    "type": "uv",
+    "entry_point": "src/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "src/server.py"],
+      "env": {
+        "KAIRN_WORKSPACE": "${user_config.workspace}"
+      }
+    }
+  },
+  "user_config": {
+    "workspace": {
+      "type": "directory",
+      "title": "Kairn workspace",
+      "description": "Directory holding the Kairn database. Everything Kairn stores stays inside it and never leaves this machine.",
+      "required": false,
+      "default": "${HOME}/.kairn"
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "linux", "win32"],
+    "runtimes": {
+      "python": ">=3.11"
+    }
+  }
+}
