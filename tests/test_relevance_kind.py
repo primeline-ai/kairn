@@ -431,3 +431,129 @@ async def test_semantic_path_is_labelled_similarity_not_match(tmp_path):
             f"its number is an embedding cosine, not a bm25 match score"
         )
     assert not wrong_kinds(payload)
+
+
+# ---------------------------------------------------------------------------
+# context() NODES. Until the router candidates were ranked, these carried a
+# `confidence` and no `relevance` at all, so the invariant above skipped them
+# entirely - it only fires on rows that HAVE a relevance. That is the shape of
+# gap worth naming: an invariant over "every row with X" is silent about rows
+# that lack X, and the missing rows were the whole defect.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_context_nodes_carry_a_match_score_not_a_constant(intel):
+    payload = await intel.context(keywords="sqlite wal checkpoint starvation", limit=10)
+    nodes = payload.get("nodes") or []
+    assert nodes, "fixture produced no context nodes"
+    for n in nodes:
+        assert "relevance" in n, f"context node {n.get('id')} has no relevance at all"
+        assert n["relevance_kind"] in {RELEVANCE_KIND_MATCH, RELEVANCE_KIND_UNSCORED}
+    # At least one must be a real match, or the score is a constant by another
+    # name and this test would pass on the defect it exists to catch.
+    assert any(n["relevance_kind"] == RELEVANCE_KIND_MATCH for n in nodes), (
+        f"every context node came back UNSCORED: "
+        f"{[(n.get('id'), n.get('relevance')) for n in nodes]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_context_nodes_put_matched_before_unscored(intel):
+    """Ordering is by (kind, relevance), and the KIND is the part that must
+    hold on any corpus.
+
+    Two earlier versions of this test were vacuous. The first compared a
+    one-element list against its own sort - a `nodes.reverse()` mutant survived
+    it. The second demanded two distinct relevance NUMBERS, which a small test
+    corpus cannot produce: bm25 magnitudes scale with corpus size, so on four
+    nodes every genuine match maps to 0.0 through `score/(score+5.0)`. That is
+    correct bm25 behaviour, not a defect, and a test that needs production-scale
+    IDF to be non-vacuous does not belong in a unit suite.
+
+    So this asserts the property that is true at every scale: no unscored node
+    may appear above a matched one."""
+    for extra in (
+        "sqlite wal checkpoint starvation under concurrent readers and writers",
+        "sqlite wal checkpoint",
+        "starvation",
+    ):
+        await intel.learn(content=extra, type="gotcha", confidence="high")
+
+    payload = await intel.context(keywords="sqlite wal checkpoint starvation", limit=10)
+    nodes = payload.get("nodes") or []
+    assert nodes, "fixture produced no context nodes"
+    kinds = [n["relevance_kind"] for n in nodes]
+    seen_unscored = False
+    for k in kinds:
+        if k == RELEVANCE_KIND_UNSCORED:
+            seen_unscored = True
+        elif seen_unscored:
+            raise AssertionError(f"a matched node sits below an unscored one: {kinds}")
+    # And within the matched block, relevance must not increase.
+    matched = [n["relevance"] for n in nodes if n["relevance_kind"] == RELEVANCE_KIND_MATCH]
+    assert matched == sorted(matched, reverse=True), f"matched block unsorted: {matched}"
+
+
+def test_bm25_relevance_is_monotone_in_rank():
+    """The ordering above only means something if the transform preserves bm25
+    order. FTS5 bm25 is NEGATIVE and more-negative is a stronger match, so the
+    mapping must be decreasing in `rank`. Checked across the magnitudes a real
+    store actually produces, not toy values."""
+    from kairn.core.intelligence import _bm25_to_relevance
+
+    ranks = [-12.0, -7.5, -5.0, -3.0, -1.0, -1e-3, -1e-6]
+    rels = [_bm25_to_relevance(r) for r in ranks]
+    pairs = list(zip(ranks, rels, strict=True))
+    assert rels == sorted(rels, reverse=True), f"not monotone: {pairs}"
+    assert rels[0] > rels[-1], "the transform is flat across a 12-point bm25 range"
+    assert _bm25_to_relevance(-5.0) == 0.5, "midpoint moved without this test noticing"
+    assert _bm25_to_relevance(None) == 1.0, "the no-match browse case changed"
+
+
+@pytest.mark.asyncio
+async def test_context_node_relevance_is_not_all_one_value(intel):
+    """The defect, stated directly. `router.route()` reports the route's own
+    confidence, and every route in a real store carries 0.5 - one distinct
+    value across 23,346 rows. A score that never varies is not a score."""
+    await intel.learn(content="wal checkpoint starvation under readers",
+                      type="gotcha", confidence="high")
+    await intel.learn(content="entirely unrelated topic about vector tiles",
+                      type="pattern", confidence="high")
+    payload = await intel.context(keywords="sqlite wal checkpoint starvation", limit=10)
+    nodes = payload.get("nodes") or []
+    if len(nodes) < 2:
+        pytest.skip("need at least two context nodes to compare")
+    assert len({n["relevance"] for n in nodes}) > 1, (
+        f"all {len(nodes)} context nodes report the same relevance "
+        f"{nodes[0]['relevance']} - the score carries no information"
+    )
+
+
+def test_context_node_sort_key_puts_matched_above_unscored():
+    """Direct test of the ordering, at any scale.
+
+    The fixture-driven version of this was vacuous three times over: once
+    against a one-element list, once because a small corpus cannot produce two
+    distinct bm25 values, and once because every node the router returns in a
+    test also matches, so an UNSCORED row never appears. Each time a mutant
+    survived. Testing the key directly is the criterion that ends that loop."""
+    from kairn.core.intelligence import _context_node_sort_key
+
+    unscored_high = {"id": "u", "relevance": 0.99, "relevance_kind": RELEVANCE_KIND_UNSCORED}
+    matched_zero = {"id": "m", "relevance": 0.0, "relevance_kind": RELEVANCE_KIND_MATCH}
+    matched_high = {"id": "M", "relevance": 0.58, "relevance_kind": RELEVANCE_KIND_MATCH}
+
+    rows = [unscored_high, matched_zero, matched_high]
+    rows.sort(key=_context_node_sort_key)
+    assert [r["id"] for r in rows] == ["M", "m", "u"], (
+        f"a matched row must outrank an unscored one whatever the numbers say, "
+        f"and 0.0 is a REAL score on a small corpus: {[r['id'] for r in rows]}"
+    )
+
+    # Stability within a class: equal keys keep incoming order.
+    a = {"id": "a", "relevance": 0.5, "relevance_kind": RELEVANCE_KIND_MATCH}
+    b = {"id": "b", "relevance": 0.5, "relevance_kind": RELEVANCE_KIND_MATCH}
+    rows2 = [a, b]
+    rows2.sort(key=_context_node_sort_key)
+    assert [r["id"] for r in rows2] == ["a", "b"]
