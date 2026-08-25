@@ -65,24 +65,6 @@ def _bm25_to_relevance(rank: float | None) -> float:
     return round(score / (score + _BM25_RELEVANCE_MIDPOINT), 4)
 
 
-def _context_node_sort_key(node: dict[str, Any]) -> tuple[bool, float]:
-    """Order context nodes by (kind, relevance) - matched above unscored.
-
-    A MODULE-LEVEL FUNCTION RATHER THAN AN INLINE LAMBDA, deliberately. As a
-    lambda this logic was untestable at unit scale: the only fixture that
-    reaches it produces nodes that are ALL matched, so a mutant that dropped the
-    kind term and sorted on the number alone survived every test three times
-    running. The behaviour it encodes cannot be reproduced on a small corpus -
-    bm25 needs production-scale IDF - so it is tested directly instead, with
-    synthetic rows.
-
-    0.0 cannot be the unscored sentinel by itself: on a small store a genuine
-    match also maps to 0.0 through `score/(score+5.0)`. `relevance_kind` is the
-    discriminator, and the numeric tie-break only orders within a class."""
-    return (node.get("relevance_kind") != RELEVANCE_KIND_MATCH,
-            -float(node.get("relevance", 0.0)))
-
-
 class IntelligenceLayer:
     """Unified intelligence operations over graph, experience, and routing."""
 
@@ -696,34 +678,37 @@ class IntelligenceLayer:
         # Route-based node discovery
         route_results = await self.router.route(keywords, limit=limit)
 
-        # MATCH STRENGTH FOR THE ROUTER'S CANDIDATES.
+        # NODE RANKING FOR THIS SURFACE IS AN OPEN DEFECT - see below.
         #
-        # `router.route()` selects nodes by keyword->node routes and reports the
-        # route's own `confidence`. Measured against a real store, that field
-        # carries NO information: `select confidence, count(*) from routes`
-        # returns a single row, 0.5 for all 23,346 routes. So `min_confidence`
-        # never excludes anything, `max(node_scores...)` ranks nothing, and the
-        # order a caller receives is whatever the id sort happened to produce.
-        # A consumer picking the best few nodes out of this had nothing to pick
-        # on - which is exactly what the hook that injects three rows per tool
-        # call was doing.
+        # These nodes come from `router.route()` and report the route's own
+        # `confidence`. On a real store that field carries no information:
+        #     sqlite3 kairn.db "select confidence, count(*) from routes
+        #                       group by confidence"
+        #     -> 0.5|23353        (one row - every route in the store)
+        # So `min_confidence` excludes nothing at its default, `max(node_scores)`
+        # ranks nothing, and the order a caller receives is whatever the id sort
+        # produced. A consumer picking the best few nodes has nothing to pick on.
         #
-        # The fix does NOT replace route discovery, because routes legitimately
-        # surface nodes that FTS misses. It ranks the candidates the router
-        # already chose, by the same bm25 the recall path uses, and says so via
-        # relevance_kind. A candidate with no FTS match keeps its place at the
-        # back as UNSCORED rather than being dropped - selection is unchanged,
-        # only the order and the honesty of the score.
-        rank_by_id: dict[str, float | None] = {}
-        if fts_query:
-            try:
-                for node, rank in await self.graph.query_ranked(
-                    text=fts_query, limit=max(limit * 4, 20)
-                ):
-                    rank_by_id[node.id] = rank
-            except Exception:
-                rank_by_id = {}
-
+        # AN ATTEMPT TO FIX THIS WAS REVERTED, and the reason is worth keeping.
+        # It ranked the router's candidates by intersecting them with
+        # `query_ranked(text=fts_query, limit=max(limit*4, 20))` - a GLOBAL
+        # top-K - and labelled anything absent from that window UNSCORED. That
+        # conflates four different states: no lexical match, a match below an
+        # arbitrary cutoff, an id mismatch, and a failed query. Measured on 12
+        # real queries, 72 routed nodes:
+        #     fts limit    20 ->  9 matched, 63 "unscored"   12.5%
+        #     fts limit   100 -> 29 matched, 43 "unscored"   40.3%
+        #     fts limit  1000 -> 61 matched, 11 "unscored"   84.7%
+        #     fts limit 20000 -> 72 matched,  0 "unscored"  100.0%
+        # EVERY routed node matches - unsurprising, since routes are built from
+        # node text. The "most candidates do not match" reading was an artefact
+        # of the bound, and no fixed multiple of `limit` can fix it.
+        #
+        # THE CORRECT FIX is at the store layer: rank exactly the routed ids,
+        # by adding an id restriction to `_query_nodes_fts`'s existing WHERE
+        # clause, so coverage is complete by construction rather than by a
+        # window size. Not done here - it is a storage-layer change to a
+        # published package and belongs in its own reviewed commit.
         nodes = []
         for r in route_results:
             node_data = r["node"]
@@ -734,32 +719,11 @@ class IntelligenceLayer:
                 "namespace": node_data.get("namespace"),
                 "confidence": r["confidence"],
             }
-            nid = node_data["id"]
-            if nid in rank_by_id and rank_by_id[nid] is not None:
-                node_out["relevance"] = _bm25_to_relevance(rank_by_id[nid])
-                node_out["relevance_kind"] = RELEVANCE_KIND_MATCH
-            else:
-                node_out["relevance"] = 0.0
-                node_out["relevance_kind"] = RELEVANCE_KIND_UNSCORED
             if detail != "summary":
                 node_out["description"] = node_data.get("description")
                 node_out["tags"] = node_data.get("tags")
                 node_out["properties"] = node_data.get("properties")
             nodes.append(node_out)
-
-        # ORDER BY (kind, relevance), NOT by relevance alone.
-        #
-        # 0.0 cannot be the unscored sentinel on its own: bm25 magnitudes scale
-        # with corpus size, and on a small workspace a REAL match rounds to 0.0
-        # too (`score/(score+5.0)` with score ~5e-06). Measured on a 4-node
-        # store: three genuinely matching nodes all mapped to 0.0, which is
-        # exactly the value assigned to nodes with no match at all. Sorting on
-        # the number alone would silently mix the two classes.
-        #
-        # `relevance_kind` is the discriminator - which is what that field is
-        # for - so a matched node outranks an unscored one whatever the numbers
-        # say, and Python's stable sort keeps each class in its incoming order.
-        nodes.sort(key=_context_node_sort_key)
 
         # Also search by FTS5 if router found nothing
         if not nodes and fts_query:
