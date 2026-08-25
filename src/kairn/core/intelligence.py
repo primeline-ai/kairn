@@ -5,11 +5,11 @@ Bridges graph, experience, and router engines into unified knowledge operations.
 
 from __future__ import annotations
 
-import re
-
 import asyncio
 import logging
+import re
 import sqlite3
+import unicodedata
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -60,6 +60,19 @@ def _bm25_to_relevance(rank: float | None) -> float:
     return round(score / (score + _BM25_RELEVANCE_MIDPOINT), 4)
 
 
+def _fold_diacritics(text: str) -> str:
+    """Strip combining marks, the way FTS5's default `unicode61` tokenizer does.
+
+    `unicode61` folds diacritics when it indexes, so `Zürich` is stored as
+    `zurich` and an ASCII query for `zurich` matches it. Any code comparing a
+    query term against raw text has to fold too, or it disagrees with the index
+    it is scoring.
+    """
+    return "".join(
+        c for c in unicodedata.normalize("NFD", text) if not unicodedata.combining(c)
+    )
+
+
 def _fts_terms(fts_query: str | None) -> list[str]:
     """Recover the individual terms from a `to_fts_query` output.
 
@@ -96,14 +109,36 @@ def _term_coverage(terms: list[str], *fields: str | None) -> float:
     query is preserved for equal-coverage candidates, and recall is unchanged -
     a partial match is still RETURNED, it is just no longer scored as if it
     were a full one.
+    THIS MUST MODEL FTS5's MATCH SEMANTICS, NOT PYTHON's `in`. A literal
+    substring test diverges from the thing it is scoring, in BOTH directions,
+    and both were measured on a real FTS5 table:
+
+      FALSE NEGATIVE - `unicode61` FOLDS DIACRITICS. A node holding "Zürich
+      delegation workflow" is indexed as `zurich`, so the query term "zurich"
+      genuinely MATCHES (bm25 rank -1e-06). A literal `"zurich" in "zürich..."`
+      is False, so coverage returns 0.0 and the multiplication drives a REAL
+      match to relevance 0 - dropped under any positive `min_relevance`. This
+      is the case that makes "recall is unchanged" false for accented content.
+
+      FALSE POSITIVE - substring, not token. The term "cat" is NOT matched by
+      FTS5 against "Harpsichord repair category notes" (0 rows), but `"cat" in
+      "...category..."` is True, so a 1-of-2 match scores 2-of-2 - restoring
+      exactly the inflation this function exists to remove.
+
+    So: fold diacritics on both sides, and compare TOKEN SETS built by the same
+    shared tokenizer the query came from.
     """
+
     if not terms:
         return 1.0
-    haystack = " ".join(f.lower() for f in fields if f)
-    if not haystack:
+    want = {_fold_diacritics(t.lower()) for t in terms}
+    have = {
+        _fold_diacritics(tok)
+        for tok in re.findall(r"\w+", " ".join(f for f in fields if f).lower())
+    }
+    if not have:
         return 0.0
-    hits = sum(1 for term in {t.lower() for t in terms} if term in haystack)
-    return hits / len({t.lower() for t in terms})
+    return sum(1 for term in want if term in have) / len(want)
 
 
 class IntelligenceLayer:
