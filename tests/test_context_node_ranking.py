@@ -811,7 +811,7 @@ async def test_count_term_matches_survives_a_quote_in_a_term(store):
 
 
 @pytest.mark.asyncio
-async def test_coverage_is_a_fraction_of_TERMS_and_never_exceeds_one(engine, store):
+async def test_coverage_denominator_is_the_term_count_not_the_candidate_count(engine, store):
     """The denominator is the number of query TERMS, not the number of
     candidates.
 
