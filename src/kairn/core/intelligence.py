@@ -11,7 +11,7 @@ import re
 import sqlite3
 import unicodedata
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,6 +24,7 @@ from kairn.core.router import ContextRouter
 from kairn.events.bus import EventBus
 from kairn.events.types import EventType
 from kairn.models.experience import VALID_CONFIDENCES, VALID_TYPES
+from kairn.models.node import Node
 from kairn.relevance import (
     RELEVANCE_KIND_MATCH,
     RELEVANCE_KIND_RECENCY,
@@ -74,10 +75,40 @@ def _fold_diacritics(text: str) -> str:
     `zurich` and an ASCII query for `zurich` matches it. Any code comparing a
     query term against raw text has to fold too, or it disagrees with the index
     it is scoring.
+
+    The ASCII short-circuit is not a heuristic and does not change any result:
+    NFD leaves an all-ASCII string unchanged, and no ASCII codepoint has a
+    non-zero combining class, so the loop below provably returns `text` itself.
+    It matters because this runs once per TOKEN of every candidate document -
+    hundreds of calls per `context()` - and the overwhelming majority of those
+    tokens are ASCII. Measured on a 12.9k-node store: dropping the needless NFD
+    pass cut the coverage-scoring step of a ranked `context()` call from 38ms to
+    under 3ms, which is the difference between fitting and not fitting inside a
+    caller's latency budget. `test_fold_diacritics_ascii_shortcut_is_equivalent`
+    pins the equivalence against the unoptimised definition.
     """
+    if text.isascii():
+        return text
     return "".join(
         c for c in unicodedata.normalize("NFD", text) if not unicodedata.combining(c)
     )
+
+
+# Token class matching FTS5's `unicode61`: alphanumeric runs, and NOTHING else.
+# Deliberately not `\w`, which keeps `_` inside a token - see `_term_coverage`.
+_INDEX_TOKEN_RE = re.compile(r"[^\W_]+")
+
+
+def _index_tokens(text: str) -> set[str]:
+    """The tokens FTS5's default tokenizer would index `text` as, folded.
+
+    Any code SCORING an FTS5 match has to agree with the tokenizer that
+    produced it. Two ways to disagree have already shipped and been fixed:
+    diacritics (`Zürich` vs `zurich`) and underscores (`feedback_kairn_first`
+    as one token instead of three). Both live here now, in one place, so the
+    query side and the document side cannot drift apart again.
+    """
+    return {_fold_diacritics(tok) for tok in _INDEX_TOKEN_RE.findall(text.lower())}
 
 
 def _fts_terms(fts_query: str | None) -> list[str]:
@@ -132,20 +163,36 @@ def _term_coverage(terms: list[str], *fields: str | None) -> float:
       "...category..."` is True, so a 1-of-2 match scores 2-of-2 - restoring
       exactly the inflation this function exists to remove.
 
-    So: fold diacritics on both sides, and compare TOKEN SETS built by the same
-    shared tokenizer the query came from.
+      THIRD TRAP, SAME FAMILY - `unicode61` SPLITS ON UNDERSCORE, `\\w` DOES NOT.
+      `\\w` keeps `_` inside a token, so `feedback_kairn_first` stays one opaque
+      token in Python while FTS5 indexes it as `feedback`, `kairn`, `first`.
+      Measured on a real FTS5 table: `MATCH '"kairn"'` returns the row, and a
+      set-membership test against the `\\w+` token would not. That is the
+      dominant name shape in a Kairn store (`feedback_*`, `gotcha_*`,
+      `project_*`), and once `context()` started SORTING on coverage it began
+      inverting real orderings: a node matching 3 of 3 terms at bm25 -10.75 fell
+      below one matching 2 of 3 at -8.73, because its match hid inside an
+      underscored identifier. Found by internal review after two external
+      lenses had passed the same code.
+
+    So: fold diacritics on both sides, split on the same class `unicode61` uses,
+    and compare TOKEN SETS. A query term that itself contains `_` is several
+    FTS5 tokens, so it counts as covered when all of its tokens are present.
+    (FTS5 would additionally require them ADJACENT, since a quoted multi-token
+    term is a phrase query. Not modelled here: it would only ever make coverage
+    stricter, and the gap this closes is the one that reorders results.)
     """
 
     if not terms:
         return 1.0
-    want = {_fold_diacritics(t.lower()) for t in terms}
-    have = {
-        _fold_diacritics(tok)
-        for tok in re.findall(r"\w+", " ".join(f for f in fields if f).lower())
-    }
+    want = {frozenset(_index_tokens(t)) for t in terms}
+    want.discard(frozenset())
+    if not want:
+        return 0.0
+    have = _index_tokens(" ".join(f for f in fields if f))
     if not have:
         return 0.0
-    return sum(1 for term in want if term in have) / len(want)
+    return sum(1 for tokens in want if tokens <= have) / len(want)
 def _allocate_across_sources(
     results: list[dict[str, Any]], limit: int
 ) -> list[dict[str, Any]]:
@@ -791,6 +838,18 @@ class IntelligenceLayer:
         """Get relevant context subgraph with progressive disclosure.
 
         Combines router-based node discovery with experience search.
+
+        BEHAVIOUR CHANGE (node ranking): `nodes` used to arrive in the router's
+        own order, which on a real store is arbitrary - see the long comment
+        below. They now arrive best-match first and each carries `relevance` +
+        `relevance_kind` alongside the unchanged `confidence`. A caller that
+        relied on the previous order relied on luck; a caller that reads
+        `nodes[0]` gets a better node than before. No field was removed.
+
+        `relevance` on a node is bm25 match strength scaled by query-term
+        coverage. `relevance` on an experience is time decay. They share a name
+        and a range and nothing else - that is what `relevance_kind` reports,
+        and it is why this method does not sort the two lists together.
         """
         if not keywords or not keywords.strip():
             return {
@@ -805,72 +864,155 @@ class IntelligenceLayer:
         keywords = keywords.strip()
         fts_query = _to_fts_query(keywords)
 
-        # Route-based node discovery
-        route_results = await self.router.route(keywords, limit=limit)
-
-        # NODE RANKING FOR THIS SURFACE IS AN OPEN DEFECT - see below.
+        # NODE DISCOVERY, THEN NODE RANKING. These are two steps and the second
+        # one used to be missing.
         #
-        # These nodes come from `router.route()` and report the route's own
-        # `confidence`. On a real store that field carries no information:
+        # Discovery is the context router: keywords -> routes -> candidate ids.
+        # What the router CANNOT do is order them. Every route in a real store
+        # carries the same confidence:
         #     sqlite3 kairn.db "select confidence, count(*) from routes
         #                       group by confidence"
         #     -> 0.5|23353        (one row - every route in the store)
-        # So `min_confidence` excludes nothing at its default, `max(node_scores)`
-        # ranks nothing, and the order a caller receives is whatever the id sort
-        # produced. A consumer picking the best few nodes has nothing to pick on.
+        # so `min_confidence` excludes nothing at its default and the old code's
+        # `route(limit=limit)` returned an ARBITRARY `limit` of the candidates.
+        # On 40 real queries against a 12.9k-node store the median candidate
+        # pool was 510 live nodes. Ten were returned. Which ten was luck.
         #
-        # AN ATTEMPT TO FIX THIS WAS REVERTED, and the reason is worth keeping.
-        # It ranked the router's candidates by intersecting them with
-        # `query_ranked(text=fts_query, limit=max(limit*4, 20))` - a GLOBAL
-        # top-K - and labelled anything absent from that window UNSCORED. That
-        # conflates four different states: no lexical match, a match below an
-        # arbitrary cutoff, an id mismatch, and a failed query. Measured on 12
-        # real queries, 72 routed nodes:
+        # Ranking them is a bm25 pass restricted to exactly those ids. The
+        # restriction is the point: an EARLIER ATTEMPT ranked the candidates by
+        # intersecting them with a GLOBAL top-K (`query_ranked(limit=limit*4)`)
+        # and called everything outside that window `unscored`. That number was
+        # a property of the window, not of the data - same 12 queries, 72 nodes:
         #     fts limit    20 ->  9 matched, 63 "unscored"   12.5%
         #     fts limit   100 -> 29 matched, 43 "unscored"   40.3%
         #     fts limit  1000 -> 61 matched, 11 "unscored"   84.7%
         #     fts limit 20000 -> 72 matched,  0 "unscored"  100.0%
-        # EVERY routed node matches - unsurprising, since routes are built from
-        # node text. The "most candidates do not match" reading was an artefact
-        # of the bound, and no fixed multiple of `limit` can fix it.
+        # Restricting the MATCH to the candidate ids has no window: every
+        # candidate is scored or provably does not match.
         #
-        # THE CORRECT FIX is at the store layer: rank exactly the routed ids,
-        # by adding an id restriction to `_query_nodes_fts`'s existing WHERE
-        # clause, so coverage is complete by construction rather than by a
-        # window size. Not done here - it is a storage-layer change to a
-        # published package and belongs in its own reviewed commit.
-        nodes = []
-        for r in route_results:
-            node_data = r["node"]
-            node_out: dict[str, Any] = {
+        # THE COST IS LINEAR IN THE POOL, AND THE POOL IS NOT BOUNDED. Measured
+        # end to end through the CLI on that store: median 177 -> 203 ms, and
+        # 231 -> 402 ms on the largest pool observed (3350 candidates). A route
+        # array grows with the store, so a caller on a hot path with a hard
+        # timeout should size that timeout against its own worst pool, not the
+        # median.
+        #
+        # CAPPING THE POOL IS NOT AVAILABLE HERE, and it is worth saying why
+        # rather than leaving it to look like an oversight: the obvious cap is
+        # "rank the best N candidates by route confidence", but route confidence
+        # is the constant this whole path exists to work around. "Best N" would
+        # be an arbitrary N, which is the defect, not the fix.
+        # THE EXACT BOUND, if this ever becomes binding: coverage is a
+        # multiplier in [0, 1], so a candidate's final score can never exceed
+        # its raw bm25 relevance. Fetch the restricted set ORDER BY rank in
+        # batches and stop as soon as the `limit`-th best SCALED score is at or
+        # above the next unfetched row's RAW relevance - proven complete, no
+        # window. Measured as worth ~75ms of ~150ms, which did not justify an
+        # adaptive loop in a published package on the day the ranking landed.
+        #
+        # Ranking is by the SAME scale the recall path uses (`_bm25_to_relevance`
+        # scaled by `_term_coverage`), so a node's `relevance` here means what it
+        # means there. It is NOT comparable to an experience's `relevance` in
+        # this same payload - that one is a time-decay score, which is exactly
+        # what `relevance_kind` is there to say. Do not sort the two together.
+        candidates = await self.router.route_candidates(keywords)
+        terms = _fts_terms(fts_query)
+        nodes: list[dict[str, Any]] = []
+
+        def _node_out(
+            node_data: Mapping[str, Any],
+            confidence: float,
+            relevance: float,
+            relevance_kind: str,
+        ) -> dict[str, Any]:
+            out: dict[str, Any] = {
                 "id": node_data["id"],
                 "name": node_data["name"],
                 "type": node_data["type"],
                 "namespace": node_data.get("namespace"),
-                "confidence": r["confidence"],
+                "confidence": confidence,
+                "relevance": relevance,
+                "relevance_kind": relevance_kind,
             }
             if detail != "summary":
-                node_out["description"] = node_data.get("description")
-                node_out["tags"] = node_data.get("tags")
-                node_out["properties"] = node_data.get("properties")
-            nodes.append(node_out)
+                out["description"] = node_data.get("description")
+                out["tags"] = node_data.get("tags")
+                out["properties"] = node_data.get("properties")
+            return out
 
-        # Also search by FTS5 if router found nothing
+        if candidates and fts_query:
+            ranked = await self.graph.query_ranked(
+                text=fts_query,
+                node_ids=list(candidates),
+                limit=len(candidates),
+            )
+            scored: list[tuple[float, Node]] = []
+            for node, rank in ranked:
+                relevance = _bm25_to_relevance(rank)
+                if terms:
+                    relevance = round(
+                        relevance * _term_coverage(terms, node.name, node.description), 4
+                    )
+                scored.append((relevance, node))
+            scored.sort(key=lambda pair: pair[0], reverse=True)
+            for relevance, node in scored[:limit]:
+                nodes.append(
+                    _node_out(
+                        node.model_dump(),
+                        candidates.get(node.id, 0.0),
+                        relevance,
+                        RELEVANCE_KIND_MATCH,
+                    )
+                )
+
+        # Top up from the routed candidates when ranking could not fill the
+        # slots. They are REAL routed nodes and dropping them would cost recall,
+        # so they are returned last, at relevance 0.0, labelled `unscored`.
+        #
+        # `unscored` MEANS "NO SCORE AVAILABLE", NOT "NO LEXICAL MATCH", and the
+        # difference matters to a consumer deciding whether to abstain. Two
+        # states land here:
+        #   * the candidate did not match the text
+        #   * no FTS query was built at all, so nothing was scored. The router
+        #     and `to_fts_query` use DIFFERENT stop-word sets, so `keywords="need
+        #     about"` routes to real candidates while `to_fts_query` returns
+        #     None - and a node whose text contains both words comes back
+        #     `unscored`. Reading that as "the store provably has no match" is
+        #     wrong.
+        # This is the same meaning `_keyword_node_recall` gives the label for a
+        # text-less query, so the two paths agree. An earlier version of this
+        # comment claimed the label meant one thing only; internal review
+        # produced the counterexample above.
+        if len(nodes) < limit:
+            already = {n["id"] for n in nodes}
+            for r in await self.router.take_live(
+                candidates, limit=limit - len(nodes), skip=already
+            ):
+                nodes.append(_node_out(r["node"], r["confidence"], 0.0, RELEVANCE_KIND_UNSCORED))
+
+        # Also search by FTS5 if the router found nothing.
+        #
+        # This path has NO candidate set to restrict to, so unlike the ranked
+        # path above it genuinely is a top-K of the whole corpus - `limit` rows
+        # in raw bm25 order. Coverage scaling can only REORDER those rows, never
+        # pull in a row that bm25 ranked lower, so which rows appear here does
+        # depend on `limit`. Say so rather than implying the same completeness.
+        # The re-sort is not optional: without it the returned order is raw bm25
+        # while the reported `relevance` is the coverage-scaled score, and the
+        # two disagree (external review, first version of this method).
         if not nodes and fts_query:
-            fts_nodes = await self.graph.query(text=fts_query, limit=limit)
-            for n in fts_nodes:
-                node_out = {
-                    "id": n.id,
-                    "name": n.name,
-                    "type": n.type,
-                    "namespace": n.namespace,
-                    "confidence": 0.5,
-                }
-                if detail != "summary":
-                    node_out["description"] = n.description
-                    node_out["tags"] = n.tags
-                    node_out["properties"] = n.properties
-                nodes.append(node_out)
+            ranked = await self.graph.query_ranked(text=fts_query, limit=limit)
+            fallback: list[tuple[float, Node]] = []
+            for n, rank in ranked:
+                relevance = _bm25_to_relevance(rank)
+                if terms:
+                    relevance = round(
+                        relevance * _term_coverage(terms, n.name, n.description), 4
+                    )
+                fallback.append((relevance, n))
+            fallback.sort(key=lambda pair: pair[0], reverse=True)
+            for relevance, n in fallback:
+                nodes.append(_node_out(n.model_dump(), 0.5, relevance, RELEVANCE_KIND_MATCH))
 
         # Log node access for activity tracking
         if nodes:

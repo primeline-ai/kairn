@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,13 @@ import aiosqlite
 from kairn.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
+
+# Bind-variable budget for an `IN (?, ?, ...)` id restriction. SQLite caps
+# parameters at SQLITE_LIMIT_VARIABLE_NUMBER: 32766 since 3.32, but 999 on
+# older builds, and this package runs on whatever SQLite the host Python
+# ships. 900 leaves headroom for the query's own non-id parameters on the
+# 999 build. Not a tuning knob - it is the portability floor.
+_MAX_ID_BINDINGS = 900
 
 # Column whitelists per table — prevents SQL injection in UPDATE operations
 _ALLOWED_COLUMNS: dict[str, set[str]] = {
@@ -383,18 +390,28 @@ class SQLiteStore(StorageBackend):
         tags: list[str] | None = None,
         text: str | None = None,
         visibility: str | None = None,
+        node_ids: Sequence[str] | None = None,
         limit: int = 10,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
+        # A `str` IS a `Sequence[str]`, so a caller passing one id instead of a
+        # one-element list would have it expanded to single CHARACTER ids and
+        # get [] back - indistinguishable from "nothing matched". Silent, and on
+        # a public API. Raise instead (internal review).
+        if isinstance(node_ids, str):
+            raise TypeError("node_ids must be a sequence of ids, not a single str")
         if text:
             return await self._query_nodes_fts(
                 text,
                 namespace=namespace,
                 node_type=node_type,
                 visibility=visibility,
+                node_ids=node_ids,
                 limit=limit,
                 offset=offset,
             )
+        if node_ids is not None:
+            raise ValueError("node_ids requires a text query (it restricts the FTS match)")
 
         conditions = ["deleted_at IS NULL"]
         params: list[Any] = []
@@ -442,9 +459,34 @@ class SQLiteStore(StorageBackend):
         namespace: str | None = None,
         node_type: str | None = None,
         visibility: str | None = None,
+        node_ids: Sequence[str] | None = None,
         limit: int = 10,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
+        """FTS5 node search, optionally restricted to an explicit id set.
+
+        `node_ids` exists so a caller that already holds a candidate set - the
+        context router's routed nodes, say - can score EXACTLY that set instead
+        of intersecting it with a global top-K. Ranking a candidate set by
+        membership in a top-K makes the result a property of K: measured on 12
+        real queries over 72 routed nodes, the share that "matched" ran 12.5% at
+        K=20, 40.3% at K=100, 84.7% at K=1000 and 100% at K=20000. Restricting
+        the MATCH instead makes coverage complete by construction.
+
+        An empty `node_ids` restricts to nothing and returns []; `None` means no
+        restriction at all. The two are deliberately different.
+        """
+        if node_ids is not None:
+            return await self._query_nodes_fts_by_ids(
+                text,
+                node_ids,
+                namespace=namespace,
+                node_type=node_type,
+                visibility=visibility,
+                limit=limit,
+                offset=offset,
+            )
+
         conditions = ["nodes.deleted_at IS NULL"]
         params: list[Any] = [text]
 
@@ -470,6 +512,107 @@ class SQLiteStore(StorageBackend):
         cursor = await self.db.execute(query, params)
         rows = await cursor.fetchall()
         return [_row_to_dict(row) for row in rows]
+
+    async def _query_nodes_fts_by_ids(
+        self,
+        text: str,
+        node_ids: Sequence[str],
+        *,
+        namespace: str | None = None,
+        node_type: str | None = None,
+        visibility: str | None = None,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """`_query_nodes_fts` restricted to an explicit id set, in bind-safe chunks.
+
+        WHY CHUNKING IS NOT OPTIONAL. The ids go into an `IN (?, ?, ...)` list,
+        one bind variable each, against SQLITE_LIMIT_VARIABLE_NUMBER. That is
+        32766 on SQLite >= 3.32 but **999** on older builds, and this package
+        supports whatever SQLite the host Python ships. A single routed keyword
+        set on a real store already reached 1586 candidates, so the 999 build
+        would raise "too many SQL variables" on ordinary data.
+
+        MERGING CHUNKS IS SOUND because FTS5's bm25 is computed from
+        corpus-global term statistics, not from the result set - a row's `rank`
+        does not depend on which other rows the query returned. Verified on the
+        live store before this was written: across 12 queries and 4667 matched
+        rows, a row's rank under the id restriction was identical to its rank in
+        the unrestricted query, and chunking at 100 reproduced the single-shot
+        result exactly. `tests/test_context_node_ranking.py` pins both.
+
+        `limit`/`offset` are applied AFTER the merge, never per chunk - applying
+        them per chunk would return a different (and wrong) set.
+
+        TWO THINGS THE MERGE NEEDS THAT THE CHUNK LOOP DOES NOT GIVE IT, both
+        found by external review of the first version of this method:
+
+        * `IN (...)` is SET membership, so one unchunked query cannot return a
+          row twice however often its id appears in the list. Chunk-and-extend
+          is a MULTISET: a duplicate id spanning two chunks returns two rows,
+          which under `limit` displaces a different node entirely. The ids are
+          therefore deduplicated first, keeping first-occurrence order.
+        * Equal ranks are common on small corpora. Sorting on `rank` alone is
+          stable over the CONCATENATION order, which differs between one chunk
+          and many. The sort key carries `id` as a tie-break so the result is
+          the same however the list was split. Note what that does and does not
+          promise: SQLite leaves the order of equal-`rank` rows UNSPECIFIED, so
+          this makes the restricted path deterministic, and by doing so it can
+          order ties differently from the unrestricted query. Deterministic was
+          the goal; byte-identity with an unspecified order was never available.
+        * `limit`/`offset` reach SQL as a `LIMIT ? OFFSET ?` clause on the
+          unrestricted path and as a Python SLICE here, and the two disagree on
+          negative values: SQLite reads a negative LIMIT as unbounded and a
+          negative OFFSET as zero, while `out[0:-1]` silently drops the last
+          row and `out[-1:0]` returns nothing. They are normalised below so both
+          paths answer the same. Found by external review; the first version
+          had the raw slice.
+
+        HONEST LIMIT: the chunks are separate statements, so a writer committing
+        between them can produce a merged result no single snapshot contained.
+        Kairn assumes single-process-per-workspace (see `_migrate_schema`), and
+        chunking only engages above `_MAX_ID_BINDINGS` candidates, but
+        "equivalent to one query" holds for a fixed snapshot, not under
+        concurrent writes.
+        """
+        if not node_ids:
+            return []
+        node_ids = list(dict.fromkeys(node_ids))
+
+        conditions = ["nodes.deleted_at IS NULL"]
+        tail_params: list[Any] = []
+        if namespace:
+            conditions.append("nodes.namespace = ?")
+            tail_params.append(namespace)
+        if node_type:
+            conditions.append("nodes.type = ?")
+            tail_params.append(node_type)
+        if visibility:
+            conditions.append("nodes.visibility = ?")
+            tail_params.append(visibility)
+        where = " AND ".join(conditions)
+
+        rows: list[Any] = []
+        ids = list(node_ids)
+        for start in range(0, len(ids), _MAX_ID_BINDINGS):
+            chunk = ids[start : start + _MAX_ID_BINDINGS]
+            placeholders = ",".join("?" * len(chunk))
+            query = f"""
+                SELECT nodes.*, rank FROM nodes_fts
+                JOIN nodes ON nodes.rowid = nodes_fts.rowid
+                WHERE nodes_fts MATCH ? AND {where}
+                  AND nodes.id IN ({placeholders})
+                ORDER BY rank
+            """
+            cursor = await self.db.execute(query, [text, *tail_params, *chunk])
+            rows.extend(await cursor.fetchall())
+
+        out = [_row_to_dict(row) for row in rows]
+        out.sort(key=lambda r: (r["rank"], r["id"]))
+        start = max(0, offset)
+        if limit is None or limit < 0:      # SQLite: negative LIMIT is unbounded
+            return out[start:]
+        return out[start : start + limit]
 
     async def count_nodes(self, *, namespace: str | None = None) -> int:
         if namespace:

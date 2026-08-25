@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any
 
 
@@ -48,10 +49,16 @@ class StorageBackend(ABC):
         tags: list[str] | None = None,
         text: str | None = None,
         visibility: str | None = None,
+        node_ids: Sequence[str] | None = None,
         limit: int = 10,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """Query nodes with filters. FTS5 used when text is provided."""
+        """Query nodes with filters. FTS5 used when text is provided.
+
+        `node_ids` restricts the FTS match to an explicit candidate set and
+        requires `text`; an empty sequence restricts to nothing, `None` means
+        no restriction.
+        """
 
     @abstractmethod
     async def count_nodes(self, *, namespace: str | None = None) -> int:
