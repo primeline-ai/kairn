@@ -94,6 +94,23 @@ def _fold_diacritics(text: str) -> str:
     )
 
 
+# Token class matching FTS5's `unicode61`: alphanumeric runs, and NOTHING else.
+# Deliberately not `\w`, which keeps `_` inside a token - see `_term_coverage`.
+_INDEX_TOKEN_RE = re.compile(r"[^\W_]+")
+
+
+def _index_tokens(text: str) -> set[str]:
+    """The tokens FTS5's default tokenizer would index `text` as, folded.
+
+    Any code SCORING an FTS5 match has to agree with the tokenizer that
+    produced it. Two ways to disagree have already shipped and been fixed:
+    diacritics (`Zürich` vs `zurich`) and underscores (`feedback_kairn_first`
+    as one token instead of three). Both live here now, in one place, so the
+    query side and the document side cannot drift apart again.
+    """
+    return {_fold_diacritics(tok) for tok in _INDEX_TOKEN_RE.findall(text.lower())}
+
+
 def _fts_terms(fts_query: str | None) -> list[str]:
     """Recover the individual terms from a `to_fts_query` output.
 
@@ -146,20 +163,36 @@ def _term_coverage(terms: list[str], *fields: str | None) -> float:
       "...category..."` is True, so a 1-of-2 match scores 2-of-2 - restoring
       exactly the inflation this function exists to remove.
 
-    So: fold diacritics on both sides, and compare TOKEN SETS built by the same
-    shared tokenizer the query came from.
+      THIRD TRAP, SAME FAMILY - `unicode61` SPLITS ON UNDERSCORE, `\\w` DOES NOT.
+      `\\w` keeps `_` inside a token, so `feedback_kairn_first` stays one opaque
+      token in Python while FTS5 indexes it as `feedback`, `kairn`, `first`.
+      Measured on a real FTS5 table: `MATCH '"kairn"'` returns the row, and a
+      set-membership test against the `\\w+` token would not. That is the
+      dominant name shape in a Kairn store (`feedback_*`, `gotcha_*`,
+      `project_*`), and once `context()` started SORTING on coverage it began
+      inverting real orderings: a node matching 3 of 3 terms at bm25 -10.75 fell
+      below one matching 2 of 3 at -8.73, because its match hid inside an
+      underscored identifier. Found by internal review after two external
+      lenses had passed the same code.
+
+    So: fold diacritics on both sides, split on the same class `unicode61` uses,
+    and compare TOKEN SETS. A query term that itself contains `_` is several
+    FTS5 tokens, so it counts as covered when all of its tokens are present.
+    (FTS5 would additionally require them ADJACENT, since a quoted multi-token
+    term is a phrase query. Not modelled here: it would only ever make coverage
+    stricter, and the gap this closes is the one that reorders results.)
     """
 
     if not terms:
         return 1.0
-    want = {_fold_diacritics(t.lower()) for t in terms}
-    have = {
-        _fold_diacritics(tok)
-        for tok in re.findall(r"\w+", " ".join(f for f in fields if f).lower())
-    }
+    want = {frozenset(_index_tokens(t)) for t in terms}
+    want.discard(frozenset())
+    if not want:
+        return 0.0
+    have = _index_tokens(" ".join(f for f in fields if f))
     if not have:
         return 0.0
-    return sum(1 for term in want if term in have) / len(want)
+    return sum(1 for tokens in want if tokens <= have) / len(want)
 def _allocate_across_sources(
     results: list[dict[str, Any]], limit: int
 ) -> list[dict[str, Any]]:
@@ -855,10 +888,27 @@ class IntelligenceLayer:
         #     fts limit  1000 -> 61 matched, 11 "unscored"   84.7%
         #     fts limit 20000 -> 72 matched,  0 "unscored"  100.0%
         # Restricting the MATCH to the candidate ids has no window: every
-        # candidate is scored or provably does not match. It costs ~7ms per call
-        # on that store against ~0.08ms for the old fetch-ten-and-stop loop -
-        # 7ms being far below one FTS experience search, which this call already
-        # does unconditionally.
+        # candidate is scored or provably does not match.
+        #
+        # THE COST IS LINEAR IN THE POOL, AND THE POOL IS NOT BOUNDED. Measured
+        # end to end through the CLI on that store: median 177 -> 203 ms, and
+        # 231 -> 402 ms on the largest pool observed (3350 candidates). A route
+        # array grows with the store, so a caller on a hot path with a hard
+        # timeout should size that timeout against its own worst pool, not the
+        # median.
+        #
+        # CAPPING THE POOL IS NOT AVAILABLE HERE, and it is worth saying why
+        # rather than leaving it to look like an oversight: the obvious cap is
+        # "rank the best N candidates by route confidence", but route confidence
+        # is the constant this whole path exists to work around. "Best N" would
+        # be an arbitrary N, which is the defect, not the fix.
+        # THE EXACT BOUND, if this ever becomes binding: coverage is a
+        # multiplier in [0, 1], so a candidate's final score can never exceed
+        # its raw bm25 relevance. Fetch the restricted set ORDER BY rank in
+        # batches and stop as soon as the `limit`-th best SCALED score is at or
+        # above the next unfetched row's RAW relevance - proven complete, no
+        # window. Measured as worth ~75ms of ~150ms, which did not justify an
+        # adaptive loop in a published package on the day the ranking landed.
         #
         # Ranking is by the SAME scale the recall path uses (`_bm25_to_relevance`
         # scaled by `_term_coverage`), so a node's `relevance` here means what it
@@ -916,11 +966,23 @@ class IntelligenceLayer:
                 )
 
         # Top up from the routed candidates when ranking could not fill the
-        # slots: a keyword-only query that produced no FTS query at all, or
-        # candidates that genuinely do not match the text. They are REAL routed
-        # nodes and dropping them would cost recall, so they are returned last
-        # and labelled honestly - `unscored` here means one thing only, "no
-        # lexical match", because coverage of the candidate set is complete.
+        # slots. They are REAL routed nodes and dropping them would cost recall,
+        # so they are returned last, at relevance 0.0, labelled `unscored`.
+        #
+        # `unscored` MEANS "NO SCORE AVAILABLE", NOT "NO LEXICAL MATCH", and the
+        # difference matters to a consumer deciding whether to abstain. Two
+        # states land here:
+        #   * the candidate did not match the text
+        #   * no FTS query was built at all, so nothing was scored. The router
+        #     and `to_fts_query` use DIFFERENT stop-word sets, so `keywords="need
+        #     about"` routes to real candidates while `to_fts_query` returns
+        #     None - and a node whose text contains both words comes back
+        #     `unscored`. Reading that as "the store provably has no match" is
+        #     wrong.
+        # This is the same meaning `_keyword_node_recall` gives the label for a
+        # text-less query, so the two paths agree. An earlier version of this
+        # comment claimed the label meant one thing only; internal review
+        # produced the counterexample above.
         if len(nodes) < limit:
             already = {n["id"] for n in nodes}
             for r in await self.router.take_live(

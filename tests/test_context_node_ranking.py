@@ -19,7 +19,11 @@ import pytest_asyncio
 from kairn.core.experience import ExperienceEngine
 from kairn.core.graph import GraphEngine
 from kairn.core.ideas import IdeaEngine
-from kairn.core.intelligence import IntelligenceLayer, _fold_diacritics
+from kairn.core.intelligence import (
+    IntelligenceLayer,
+    _fold_diacritics,
+    _term_coverage,
+)
 from kairn.core.memory import ProjectMemory
 from kairn.core.router import ContextRouter
 from kairn.events.bus import EventBus
@@ -556,3 +560,84 @@ async def test_restricted_result_matches_one_genuine_unchunked_statement(store):
         ]
         assert got == expected, f"limit={limit} offset={offset}: {got} != {expected}"
     assert len(expected) == 4, "last case did not exercise paging"
+
+
+# --- what the internal review found, after the external lenses -------------
+
+
+@pytest.mark.asyncio
+async def test_underscored_names_do_not_invert_the_ranking(engine, store):
+    """`unicode61` splits on `_`; Python's `\\w` does not.
+
+    Verified against a real FTS5 table: a document holding
+    `feedback_kairn_first` MATCHES the query term `"kairn"`. Scoring that match
+    with a `\\w+` tokenizer sees one opaque token, scores coverage 0, and drives
+    a genuine 3-of-3 match below a 2-of-3 one. That is the dominant name shape
+    in a Kairn store, so it inverts real orderings rather than edge cases.
+
+    `better` matches all three query terms and wins on raw bm25; `worse`
+    matches two. Only the underscore handling decides which comes back first.
+    """
+    ids = []
+    for i in range(20):
+        nid = f"pad{i:02d}"
+        await _node(store, nid, f"Note {i}", "routine unrelated bookkeeping")
+        ids.append(nid)
+    await _node(store, "better", "kairn_delegation_policy", "notes")
+    await _node(store, "worse", "delegation policy", "notes")
+    ids += ["better", "worse"]
+    await store.upsert_route("notes", ids, 0.5)
+
+    result = await engine.context(keywords="kairn delegation policy", limit=2)
+    returned = [n["id"] for n in result["nodes"]]
+    assert returned[0] == "better", (
+        f"a 3-of-3 match hidden inside an underscored name lost to a 2-of-3: "
+        f"{[(n['id'], n['relevance']) for n in result['nodes']]}"
+    )
+
+
+def test_term_coverage_agrees_with_fts5_on_underscores():
+    """The unit behind the ranking test, stated directly."""
+    terms = ["kairn", "delegation", "policy"]
+    assert _term_coverage(terms, "kairn_delegation_policy", None) == 1.0
+    assert _term_coverage(terms, "delegation policy", None) == pytest.approx(2 / 3)
+    # A query term carrying an underscore is several FTS5 tokens.
+    assert _term_coverage(["kairn_delegation"], "kairn delegation notes", None) == 1.0
+    assert _term_coverage(["kairn_delegation"], "kairn notes", None) == 0.0
+    # Diacritic folding still holds - the two rules share one tokenizer now.
+    assert _term_coverage(["zurich"], "Zürich delegation workflow", None) == 1.0
+
+
+@pytest.mark.asyncio
+async def test_a_bare_string_of_ids_is_rejected_not_silently_expanded(store):
+    """A `str` IS a `Sequence[str]`, so `node_ids="N1"` would expand to
+    one-character ids and return [] - indistinguishable from "nothing matched",
+    on a published public API."""
+    await _node(store, "N1", "Harpsichord", "harpsichord tuning")
+    with pytest.raises(TypeError, match="not a single str"):
+        await store.query_nodes(text='"harpsichord"', node_ids="N1", limit=10)
+    assert len(await store.query_nodes(text='"harpsichord"', node_ids=["N1"], limit=10)) == 1
+
+
+@pytest.mark.asyncio
+async def test_unscored_also_covers_no_fts_query_was_built(engine, store):
+    """`unscored` means "no score available", not "no lexical match".
+
+    The router and `to_fts_query` use DIFFERENT stop-word sets, so a query can
+    reach real candidates while no FTS query is built at all. The node here
+    contains both query words and still comes back `unscored`. Pinned because
+    an earlier comment claimed the label meant one thing only, and a consumer
+    reading it that way would abstain on a store that does have the match.
+    """
+    from kairn.core.intelligence import _to_fts_query
+
+    keywords = "need about"
+    assert _to_fts_query(keywords) is None, "fixture assumes no FTS query is built"
+
+    await _node(store, "N1", "need about scoping", "need about scoping")
+    await store.upsert_route("need", ["N1"], 0.5)
+
+    result = await engine.context(keywords=keywords, limit=5)
+    assert [n["id"] for n in result["nodes"]] == ["N1"]
+    assert result["nodes"][0]["relevance_kind"] == RELEVANCE_KIND_UNSCORED
+    assert result["nodes"][0]["relevance"] == 0.0

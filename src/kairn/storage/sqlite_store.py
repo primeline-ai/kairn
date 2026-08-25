@@ -394,6 +394,12 @@ class SQLiteStore(StorageBackend):
         limit: int = 10,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
+        # A `str` IS a `Sequence[str]`, so a caller passing one id instead of a
+        # one-element list would have it expanded to single CHARACTER ids and
+        # get [] back - indistinguishable from "nothing matched". Silent, and on
+        # a public API. Raise instead (internal review).
+        if isinstance(node_ids, str):
+            raise TypeError("node_ids must be a sequence of ids, not a single str")
         if text:
             return await self._query_nodes_fts(
                 text,
