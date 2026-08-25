@@ -129,7 +129,22 @@ class ContextRouter:
     async def context(
         self, text: str, *, detail: str = "summary", limit: int = 10
     ) -> dict[str, Any]:
-        """Get relevant context subgraph with progressive disclosure."""
+        """Get relevant context subgraph with progressive disclosure.
+
+        THIS SURFACE IS NOT RANKED, AND THAT IS RECORDED RATHER THAN HIDDEN.
+        `IntelligenceLayer.context()` scores the routed candidates by bm25
+        restricted to their ids and returns them best first. This method still
+        returns `route()`'s order, which on a real store is arbitrary because
+        every route carries the same confidence.
+
+        It was left alone deliberately, not missed. It has no caller in the
+        package or in the MCP server - `kn_context` and the `kairn context` CLI
+        both go through `IntelligenceLayer` - so the only consumers are this
+        repo's own tests. Ranking here would mean moving the scoring helpers out
+        of `core.intelligence` (which imports this module, so importing back is
+        a cycle), and that refactor does not belong stacked on the change that
+        introduced the ranking. Prefer `IntelligenceLayer.context()`.
+        """
         results = await self.route(text, limit=limit)
 
         nodes = []
