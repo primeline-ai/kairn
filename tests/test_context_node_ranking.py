@@ -480,3 +480,79 @@ async def test_fallback_fts_path_is_ordered_by_the_relevance_it_reports(engine, 
     assert ids.index("broad") < ids.index("narrow"), (
         f"raw bm25 order survived the coverage scaling: {ids}"
     )
+
+
+@pytest.mark.asyncio
+async def test_negative_limit_and_offset_agree_with_the_unrestricted_path(store):
+    """`limit`/`offset` reach SQL as a LIMIT clause on the unrestricted path and
+    as a Python slice on the restricted one. Those disagree on negatives.
+
+    SQLite: negative LIMIT is unbounded, negative OFFSET is zero.
+    Python:  out[0:-1] drops the last row, out[-1:0] is empty.
+
+    Compared against the UNRESTRICTED path over the same corpus, so the
+    expectation comes from SQLite itself rather than from a rewrite of the code
+    under test. Found by external review; the first version had the raw slice.
+    """
+    ids = []
+    for i in range(6):
+        nid = f"neg{i}"
+        # Distinct ranks: with ties, the two paths may legitimately order
+        # equal-rank rows differently and the comparison would prove nothing.
+        await _node(store, nid, f"Harpsichord {i}", "harpsichord tuning" + " pad" * i)
+        ids.append(nid)
+    text = '"harpsichord" OR "tuning"'
+
+    baseline = [r["id"] for r in await store.query_nodes(text=text, limit=-1)]
+    assert len(baseline) == 6, baseline
+
+    for limit, offset in ((-1, 0), (-1, 2), (1, -1), (3, 0), (0, 0), (2, 4)):
+        unrestricted = [
+            r["id"] for r in await store.query_nodes(text=text, limit=limit, offset=offset)
+        ]
+        restricted = [
+            r["id"]
+            for r in await store.query_nodes(
+                text=text, node_ids=ids, limit=limit, offset=offset
+            )
+        ]
+        assert restricted == unrestricted, (
+            f"limit={limit} offset={offset}: restricted {restricted} != "
+            f"unrestricted {unrestricted}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_restricted_result_matches_one_genuine_unchunked_statement(store):
+    """The chunking test compares the method against ITSELF at a different chunk
+    size, so it pins "chunking changes nothing" and not "this equals SQL".
+
+    This one runs the real single statement - every id in one `IN (...)`, paged
+    by SQL - and compares. External review pointed out the gap.
+    """
+    ids = []
+    for i in range(12):
+        nid = f"u{i:02d}"
+        await _node(store, nid, f"Harpsichord {i}", "harpsichord tuning" + " pad" * i)
+        ids.append(nid)
+    text = '"harpsichord" OR "tuning"'
+    placeholders = ",".join("?" * len(ids))
+
+    for limit, offset in ((12, 0), (5, 0), (4, 3)):
+        cursor = await store.db.execute(
+            f"""SELECT nodes.*, rank FROM nodes_fts
+                JOIN nodes ON nodes.rowid = nodes_fts.rowid
+                WHERE nodes_fts MATCH ? AND nodes.deleted_at IS NULL
+                  AND nodes.id IN ({placeholders})
+                ORDER BY rank LIMIT ? OFFSET ?""",
+            [text, *ids, limit, offset],
+        )
+        expected = [row["id"] for row in await cursor.fetchall()]
+        got = [
+            r["id"]
+            for r in await store.query_nodes(
+                text=text, node_ids=ids, limit=limit, offset=offset
+            )
+        ]
+        assert got == expected, f"limit={limit} offset={offset}: {got} != {expected}"
+    assert len(expected) == 4, "last case did not exercise paging"

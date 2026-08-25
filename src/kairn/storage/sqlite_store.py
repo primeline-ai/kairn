@@ -549,7 +549,18 @@ class SQLiteStore(StorageBackend):
         * Equal ranks are common on small corpora. Sorting on `rank` alone is
           stable over the CONCATENATION order, which differs between one chunk
           and many. The sort key carries `id` as a tie-break so the result is
-          the same however the list was split.
+          the same however the list was split. Note what that does and does not
+          promise: SQLite leaves the order of equal-`rank` rows UNSPECIFIED, so
+          this makes the restricted path deterministic, and by doing so it can
+          order ties differently from the unrestricted query. Deterministic was
+          the goal; byte-identity with an unspecified order was never available.
+        * `limit`/`offset` reach SQL as a `LIMIT ? OFFSET ?` clause on the
+          unrestricted path and as a Python SLICE here, and the two disagree on
+          negative values: SQLite reads a negative LIMIT as unbounded and a
+          negative OFFSET as zero, while `out[0:-1]` silently drops the last
+          row and `out[-1:0]` returns nothing. They are normalised below so both
+          paths answer the same. Found by external review; the first version
+          had the raw slice.
 
         HONEST LIMIT: the chunks are separate statements, so a writer committing
         between them can produce a merged result no single snapshot contained.
@@ -592,7 +603,10 @@ class SQLiteStore(StorageBackend):
 
         out = [_row_to_dict(row) for row in rows]
         out.sort(key=lambda r: (r["rank"], r["id"]))
-        return out[offset : offset + limit]
+        start = max(0, offset)
+        if limit is None or limit < 0:      # SQLite: negative LIMIT is unbounded
+            return out[start:]
+        return out[start : start + limit]
 
     async def count_nodes(self, *, namespace: str | None = None) -> int:
         if namespace:
