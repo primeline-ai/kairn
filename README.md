@@ -7,9 +7,10 @@
 
 <!-- mcp-name: io.github.primeline-ai/kairn -->
 
-**Status: Alpha.** The API and CLI are functional and tested (see
-[Development](#development)), but interfaces may still change between
-releases. Feedback and issues welcome.
+**Status: pre-1.0.** In daily use since February 2026, with 722 tests (see
+[Development](#development)) and a published
+[LongMemEval-S benchmark](#benchmarks). Interfaces may still change between
+releases until 1.0. Feedback and issues welcome.
 
 Other tools give your AI a memory. **Kairn** gives it a knowledge graph with intelligent context routing. It knows what to load, when to load it, and how much - so your AI stays focused, not overwhelmed.
 
@@ -422,15 +423,24 @@ src/kairn/
 
 ## Performance
 
-Typical operation times on modern hardware:
+Measure it yourself rather than trusting this table:
 
-| Operation | Time |
-|-----------|------|
-| `kn_add` | 2-5ms |
-| `kn_query` (100 nodes) | 5-15ms |
-| `kn_connect` | 1-3ms |
-| `kn_recall` (graph traversal) | 10-50ms |
-| `kn_crossref` (similarity search) | 20-100ms |
+```bash
+kairn benchmark ~/brain --nodes 100
+```
+
+One run of that command, 100 nodes, on an Apple M4 Pro:
+
+| Operation | Measured |
+|-----------|----------|
+| Insert | 0.7ms per node (1,479 ops/sec) |
+| FTS5 query | 0.2ms (5,552 ops/sec) |
+| Graph traversal | 6.0ms (166 ops/sec) |
+
+Single run on one machine, so treat it as a shape rather than a spec - which is
+why the command is above the table. `kn_connect` and `kn_crossref` used to
+appear here with figures the benchmark does not produce; they have been removed
+rather than estimated.
 
 ## Used By
 
