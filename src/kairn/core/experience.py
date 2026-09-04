@@ -287,11 +287,15 @@ class ExperienceEngine:
     def _match_strength(data: dict, terms: list[str]) -> float:
         """How well this row answered the question: bm25 scaled by coverage.
 
-        THE ONE MATCH QUANTITY. The sort blends it with recency, the caller is
-        shown the blend, and `min_match` floors it - all three read this
-        number, because a gate and a sort that disagree about what "match"
-        means is a defect one step sideways from the one this file already
-        fixed. Gating on raw bm25 while REPORTING bm25 * coverage let a 1-of-4
+        THE ONE MATCH QUANTITY, in the sense that all three consumers derive
+        from it: `min_match` floors it RAW, while the sort key and the reported
+        number are it nudged by recency within [0.9, 1.1]. They cannot disagree
+        about what "match" MEANS, which is the defect this replaced; they can
+        differ by up to 10% in VALUE, which is documented at `min_match` and
+        pinned by a test. Saying they are one number was too strong and an
+        external review caught it.
+
+        Gating on raw bm25 while REPORTING bm25 * coverage let a 1-of-4
         partial match clear a floor it was then reported below (measured: gate
         0.578 against a reported 0.159 at coverage 0.25).
 
@@ -425,10 +429,25 @@ class ExperienceEngine:
             text: Text to search for (FTS5)
             exp_type: Filter by experience type
             min_relevance: Minimum relevance threshold (DECAY, not match)
-            min_match: Abstention floor on MATCH strength - the same
-                bm25 * term_coverage quantity the sort uses and the caller is
-                shown. 0.0 (default) is off. A browse query has no match
-                question, so the floor does not apply to it.
+            min_match: Abstention floor on the UNBLENDED match strength
+                (`_match_strength`: bm25 saturated, scaled by term coverage).
+                0.0 (default) is off. A browse query has no match question, so
+                the floor does not apply to it.
+
+                THE FLOOR AND THE REPORTED NUMBER ARE NOT THE SAME QUANTITY,
+                and an earlier version of this line claimed they were. The sort
+                key and the reported relevance are that strength nudged by
+                recency inside [0.9, 1.1] (`blend_match_and_recency`), so an
+                OLD row can clear the floor on strength and still be reported
+                just under it: strength 0.20 against min_match 0.19 at decay
+                0.0 passes the gate and reports 0.18. That is bounded at 10%
+                and deliberate - flooring the blend instead would make the
+                abstention decision depend on age, which is the
+                lexicographic-on-a-decay-bucket gate this file exists to
+                remove (Kairn `cec86cb9`). It is a documented asymmetry, not a
+                guarantee, and
+                `test_the_gate_can_pass_a_row_the_report_shows_below_the_floor`
+                pins the direction so nobody re-derives it as a bug.
             limit: Maximum number of results
             offset: Offset for pagination
 

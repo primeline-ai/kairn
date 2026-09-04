@@ -138,10 +138,11 @@ def _reported_relevance(exp: Any, now: datetime) -> float:
     path. Reporting raw decay for a text query printed ~0.98 against alien
     queries, which is the same fake-relevance defect the node path had.
     """
-    reported = getattr(exp, "recall_relevance", None)
-    if reported is not None:
-        return reported
-    return round(exp.relevance(at=now), 4)
+    # DELEGATES. The rule lives on the model (Experience.reported_relevance)
+    # because the model is the one module every reporting surface can import,
+    # and because a second copy here is what let models/experience.py go on
+    # emitting pure decay after the wire surfaces were fixed.
+    return exp.reported_relevance(at=now)
 
 
 def _fts_terms(fts_query: str | None) -> list[str]:

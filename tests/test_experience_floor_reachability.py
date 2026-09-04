@@ -81,11 +81,28 @@ async def test_the_suggested_floor_is_unreachable_on_a_one_row_store(store):
 
 
 @pytest.mark.asyncio
-async def test_the_suggested_floor_is_reachable_once_the_store_has_ten_rows(store):
-    """Positive control: the floor is not unreachable in general, only when empty."""
+async def test_the_suggested_floor_sits_at_about_five_rows(store):
+    """The message says ~0.65 at FIVE rows. Pinned, because it was wrong once.
+
+    The first version of the message attributed ~0.65 to ten rows. It is the
+    five-row value; ten reads ~0.76. A review caught it, and the reason the
+    six tests here did not is worth keeping in view: the ten-row test asserted
+    only `strength >= 0.65`, which is true from five rows upward, so it could
+    not tell five from ten. A one-sided assertion cannot pin a value.
+    """
+    await _store_of(store, 5)
+    strength = await _strength(store, TARGET)
+    assert 0.60 <= strength <= 0.70, strength
+
+
+@pytest.mark.asyncio
+async def test_ten_rows_reads_clearly_above_the_suggested_floor(store):
+    """Positive control: the floor is not unreachable in general, only when
+    the store is nearly empty. Two-sided, so it distinguishes ten from five."""
     await _store_of(store, 10)
     strength = await _strength(store, TARGET)
     assert strength >= SUGGESTED, strength
+    assert 0.70 <= strength <= 0.82, strength
 
 
 @pytest.mark.asyncio
@@ -118,6 +135,14 @@ def test_the_message_carries_the_measurement_not_a_percentage(validate):
     message = str(excinfo.value)
     assert "NOT a percentage" in message, message
     assert "term coverage" in message, message
-    assert str(SUGGESTED) in message, message
-    # Negative control: the retired wording equated the floor with a percent.
+    # The row counts are quoted in the message, so they are asserted here as
+    # PAIRS. `str(SUGGESTED) in message` alone was satisfied by 0.65 appearing
+    # anywhere at all, which is how the message shipped saying "~0.65 at ten
+    # rows" while the measurement says five.
+    assert "~0.65 at five rows" in message, message
+    assert "~0.76 at ten" in message, message
+    assert "~0.000 on a one-row store" in message, message
+    assert "~0.92 at a thousand" in message, message
+    # Negative controls: the two retired wordings.
     assert "for 65%" not in message, message
+    assert "0.65 at ten rows" not in message, message

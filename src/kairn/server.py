@@ -62,10 +62,10 @@ def _validate_experience_min_match(value: object) -> float:
             "reaches 1.0 and any value above 1.0 is above every attainable score - "
             "recall would silently return nothing at all. The reachable range also "
             "grows with the store: measured against a row's own exact content, "
-            "match strength is ~0.000 on a one-row store, ~0.65 at ten rows and "
-            "~0.92 at a thousand. Try 0.65 on a store of any real size (it rejects "
-            "a one-word question and passes a two-word one), or 0.0 to switch the "
-            "floor off."
+            "match strength is ~0.000 on a one-row store, ~0.65 at five rows, "
+            "~0.76 at ten and ~0.92 at a thousand. Try 0.65 on a store of any "
+            "real size (it rejects a one-word question and passes a two-word "
+            "one), or 0.0 to switch the floor off."
         )
     return floor
 

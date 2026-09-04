@@ -472,6 +472,37 @@ class TestF2UnroundedOrdering:
             strength * 1.1
         )
 
+    def test_the_gate_can_pass_a_row_the_report_shows_below_the_floor(self):
+        """THE UNSAFE DIRECTION, which the test above never touched.
+
+        The test above asserts decay=1.0, where the blend is 1.1x the strength
+        and therefore always ABOVE the floor a row just cleared. An external
+        review pointed out that the other end of the band was untested: at
+        decay near 0 the blend is 0.9x, so a row can clear `min_match` on raw
+        strength and be REPORTED just under that same number.
+
+        This is documented behaviour, not a defect - flooring the blend would
+        make abstention depend on age, which is the decay-bucket gate this
+        work removed (Kairn `cec86cb9`). It is pinned here so nobody
+        re-derives it as a bug, and so the 10% bound cannot widen unnoticed.
+        """
+        strength = 0.20
+        min_match = 0.19
+        assert strength >= min_match, "precondition: the gate lets this row through"
+        reported_old = blend_match_and_recency(match=strength, decay=0.0)
+        assert reported_old < min_match, reported_old
+        assert reported_old == pytest.approx(strength * 0.9)
+
+        # The bound: the report can never be more than 10% under the strength,
+        # so a floor is never off by more than that.
+        assert reported_old >= strength * 0.9 - 1e-12
+
+        # Positive control on the other end, so this test cannot be satisfied
+        # by a blend that simply always returns something small.
+        reported_fresh = blend_match_and_recency(match=strength, decay=1.0)
+        assert reported_fresh > min_match
+        assert reported_fresh == pytest.approx(strength * 1.1)
+
     def test_no_path_in_the_engine_consumes_the_rounded_value(self):
         """The inventory, as a check. `experience.py` ORDERS and GATES; both
         need match strength, neither needs the wire's rounding. The rounded

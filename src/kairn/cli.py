@@ -82,10 +82,10 @@ def _validate_experience_min_match(value: object) -> float:
             "reaches 1.0 and any value above 1.0 is above every attainable score - "
             "recall would silently return nothing at all. The reachable range also "
             "grows with the store: measured against a row's own exact content, "
-            "match strength is ~0.000 on a one-row store, ~0.65 at ten rows and "
-            "~0.92 at a thousand. Try 0.65 on a store of any real size (it rejects "
-            "a one-word question and passes a two-word one), or 0.0 to switch the "
-            "floor off."
+            "match strength is ~0.000 on a one-row store, ~0.65 at five rows, "
+            "~0.76 at ten and ~0.92 at a thousand. Try 0.65 on a store of any "
+            "real size (it rejects a one-word question and passes a two-word "
+            "one), or 0.0 to switch the floor off."
         )
     return floor
 
@@ -1032,7 +1032,17 @@ def doctor(path: str, check: str | None, as_json: bool) -> None:
             await store.close()
 
     # _run_json prints and exits; we need the report first to compute exit code.
-    report = asyncio.run(_run())
+    # That makes doctor the 1 of 19 _build_intel_stack callers not wrapped by
+    # _run_json, so it has to reproduce the envelope itself. Without this it
+    # printed a raw traceback on a broken config while every sibling command
+    # printed the JSON envelope - and `doctor --json` promises the same
+    # shape as the MCP tool kn_doctor. The exposure is new: before the config
+    # validator existed, _build_intel_stack could not raise here.
+    try:
+        report = asyncio.run(_run())
+    except ValueError as e:
+        click.echo(json.dumps({"_v": "1.0", "error": str(e)}), err=True)
+        sys.exit(1)
     click.echo(json.dumps(report, indent=2))
     summary = report.get("summary", {})
     # Exit 1 only on fail/error. "warn" is intentionally non-fatal

@@ -320,9 +320,46 @@ def _called_names(source: str) -> set[str]:
     }
 
 
-def test_f3_census_no_decay_scale_report_left_in_server_or_cli():
-    """Every experience-relevance report in the two wire surfaces must go
-    through the ONE shared helper, not a local `round(e.relevance(), 4)`."""
+# The ONE place the fallback round() is allowed to live. Everything else in the
+# package that reports an experience relevance has to go through it.
+_REPORTING_RULE_DEFINITION = ("models/experience.py", "reported_relevance")
+
+
+def _rounds_outside(source: str, allowed_function: str | None) -> list[int]:
+    """`_decay_scale_reports`, minus the hits inside one named function.
+
+    An exemption by NAME, not by file, because the previous census was scoped
+    to a file LIST and therefore could not see the site it missed.
+    """
+    hits = set(_decay_scale_reports(source))
+    if allowed_function is None:
+        return sorted(hits)
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == allowed_function:
+            hits -= {
+                n.lineno
+                for n in ast.walk(node)
+                if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name)
+                and n.func.id == "round"
+                and n.args
+                and isinstance(n.args[0], ast.Call)
+                and isinstance(n.args[0].func, ast.Attribute)
+                and n.args[0].func.attr == "relevance"
+            }
+    return sorted(hits)
+
+
+def test_f3_census_no_decay_scale_report_left_anywhere():
+    """Every experience-relevance report in the WHOLE package must go through
+    the one shared rule, not a local `round(e.relevance(), 4)`.
+
+    Widened from a two-file list after a review found `Experience.to_response`
+    still emitting `round(self.relevance(), 3)`: a census scoped to a file list
+    cannot enumerate the site it is missing, which is the N-1-of-N shape one
+    layer up from the defect this file exists to close.
+    """
     # Positive control on the detector itself: a detector that finds nothing
     # would pass the assertion below for free.
     control = (
@@ -333,14 +370,31 @@ def test_f3_census_no_decay_scale_report_left_in_server_or_cli():
     assert len(_decay_scale_reports(control)) == 2, "the detector does not detect"
     assert "_reported_relevance" not in _called_names(control)
 
+    exempt_file, exempt_fn = _REPORTING_RULE_DEFINITION
     offenders: list[str] = []
+    scanned = 0
+    for path in sorted(SRC_KAIRN.rglob("*.py")):
+        rel = path.relative_to(SRC_KAIRN).as_posix()
+        scanned += 1
+        allowed = exempt_fn if rel == exempt_file else None
+        offenders += [f"{rel}:{ln}" for ln in _rounds_outside(path.read_text(), allowed)]
+    # Non-vacuity: a broken glob would scan nothing and pass.
+    assert scanned > 10, f"only {scanned} files scanned - the sweep is broken"
+    assert not offenders, f"decay-scale relevance reports still present at: {offenders}"
+
+    # And the exemption is REAL, not a hole: the definition site does contain
+    # the pattern, so a rename of that function would surface it as an offender.
+    definition = (SRC_KAIRN / exempt_file).read_text()
+    assert _rounds_outside(definition, None), (
+        f"{exempt_file} no longer contains the fallback round() - "
+        "the exemption is now a hole that hides nothing and would hide a new copy"
+    )
+
     for name in ("server.py", "cli.py"):
         source = (SRC_KAIRN / name).read_text()
-        offenders += [f"{name}:{ln}" for ln in _decay_scale_reports(source)]
         assert "_reported_relevance" in _called_names(source), (
             f"{name} never CALLS the shared reported-relevance helper"
         )
-    assert not offenders, f"decay-scale relevance reports still present at: {offenders}"
 
 
 # ── F6: an out-of-range floor must be LOUD ───────────────────────────
