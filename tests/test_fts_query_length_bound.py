@@ -13,11 +13,24 @@ THREE words at every size:
       2,000         48,000            77,996        26 s
       4,000         96,000                --   killed at 45 s
 
-Roughly quadratic in prompt length, and it bites in production rather than in
-theory: a hook that caps its store call at 1.5 s loses its result for exactly
-the prompts that carry the most content. After deduplicating, the query is 35
-characters at every size and a 480,000-character prompt searches in about a
-second, the remaining cost being the linear tokenizer pass.
+Roughly quadratic in prompt length.
+
+WHO IS ACTUALLY EXPOSED, corrected by the control rather than assumed. NOT the
+Evolving hooks: both cap their query at eight keywords before it reaches this
+function (`extract_subject(max_terms=8)`, and the injector's own `[:8]`), and
+a 600,000-character prompt through the live hook was 374 ms on the OLD engine.
+The exposed callers are the ones that pass UNBOUNDED text, and the one that
+matters runs on every save: `IntelligenceLayer` builds the `candidates[]` scan
+from a note's FULL content, so saving a note costs what the note is long.
+Measured against the 15k-node store, old engine against new, same six hits:
+
+    note content   fts query    candidate scan OLD    NEW
+       2,976 ch     4,460 ch             415 ms       9 ms
+      11,616 ch    17,420 ch           4,762 ms       6 ms
+      28,896 ch    43,340 ch          27,261 ms       6 ms
+
+A 29,000-character note took twenty-seven seconds to save its candidate scan,
+and returns the identical six candidates in six milliseconds now.
 
 Duplicated OR terms cannot change an FTS5 result set, which is what makes this
 free rather than a trade.
