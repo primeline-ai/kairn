@@ -153,5 +153,75 @@ def bm25_to_relevance(rank: float | None) -> float:
     """
     if rank is None:
         return 1.0
+    return round(bm25_match(rank), 4)
+
+
+def bm25_match(rank: float | None) -> float:
+    """The same transform WITHOUT the reporting round - use this for ordering.
+
+    THE ROUNDING IS FOR HUMANS AND IT DESTROYS THE ORDER ON A SMALL STORE.
+    bm25 magnitude scales with corpus size, so on a few-document store every
+    match lands under 0.00005 and `round(..., 4)` collapses the whole result
+    set to 0.0 - at which point a sort by that value is insertion order
+    wearing a ranking's name. Found by a mutation control: reverting the sort
+    to a quantised key changed nothing, because every key was already zero
+    (Kairn `ee2d1a9f` - a check that cannot fail is not a check; here the
+    CODE could not fail either).
+
+    `bm25_to_relevance` keeps its 4-decimal contract for the wire.
+    """
+    if rank is None:
+        return 1.0
     score = max(0.0, -float(rank))
-    return round(score / (score + BM25_RELEVANCE_MIDPOINT), 4)
+    return score / (score + BM25_RELEVANCE_MIDPOINT)
+
+
+def term_coverage(terms: list[str], *fields: str | None) -> float:
+    """Fraction of distinct query terms that actually occur in `fields`.
+
+    `to_fts_query` joins terms with OR so ANY keyword can match - deliberate,
+    and it is what gives Kairn its recall. But bm25 then scores the document
+    on whatever did match, and the saturating transform above only ever sees
+    that aggregate, so it cannot tell a 1-of-6 match from a 6-of-6 one.
+    Scaling relevance by coverage is match strength times how much of the
+    question you actually answered. Recall is unchanged - a partial match is
+    still RETURNED, it is just no longer scored as if it were a full one.
+
+    Lives here rather than in `intelligence` for the same reason
+    `bm25_to_relevance` does: BOTH paths need it and `intelligence` imports
+    `experience`. `intelligence._term_coverage` remains as an alias.
+    """
+    if not terms:
+        return 1.0
+    haystack = " ".join(f.lower() for f in fields if f)
+    if not haystack:
+        return 0.0
+    distinct = {t.lower() for t in terms}
+    hits = sum(1 for term in distinct if term in haystack)
+    return hits / len(distinct)
+
+
+# The recency NUDGE band. Recency multiplies a match by at most +-10% by
+# default, so it can order two comparable matches and can never promote a weak
+# fresh hit over a strong old one. Kairn `cec86cb9`: compensatory ranking,
+# never a re-tuned gate - a lexicographic sort on a decay bucket IS the gate.
+TIME_BOOST_LO = 0.9
+TIME_BOOST_HI = 1.1
+
+
+def blend_match_and_recency(
+    *, match: float, decay: float, lo: float = TIME_BOOST_LO, hi: float = TIME_BOOST_HI
+) -> float:
+    """ONE sort key: match strength, nudged by recency inside a bounded band.
+
+    `match` is `bm25_to_relevance(rank) * term_coverage(terms, ...)` and
+    `decay` is the model's pure time-decay relevance in [0, 1]. The result is
+    NOT a probability and is only ever compared against other results of the
+    same query - which is why `min_relevance` keeps gating on decay alone:
+    bm25 magnitude scales with corpus size, so a floor on this composite
+    filters a small store empty (measured, and reverted, on an earlier branch).
+    """
+    span = max(0.0, hi - lo)
+    bounded = min(1.0, max(0.0, decay))
+    return match * (lo + span * bounded)
+

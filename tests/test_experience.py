@@ -508,10 +508,21 @@ async def test_search_text_match_strength_beats_microsecond_recency(engine):
 
 
 @pytest.mark.asyncio
-async def test_search_text_old_low_relevance_ranks_below_fresh(engine):
-    """Decay still matters across coarse buckets: a genuinely old entry
-    (low decay-relevance) ranks below a fresh entry even when the old one
-    is the stronger text match. The old entry must still appear in results.
+async def test_search_text_a_strong_old_match_outranks_a_weak_fresh_one(engine):
+    """REWRITTEN AS A DESIGN ACT, not repaired. It previously asserted the
+    opposite: "a genuinely old entry ranks below a fresh entry EVEN WHEN the
+    old one is the stronger text match". That was the honest statement of the
+    decay-bucket sort, and it is the behaviour the compensatory score
+    deliberately overturns - it is the mechanism behind "the injector keeps
+    showing me recent notes I do not need" (Kairn `cec86cb9`, `dd17ee8c`).
+
+    A contract test that starts failing because the design changed must be
+    rewritten with the new contract NAMED, never quietly relaxed or deleted
+    (Kairn `884a39ee`).
+
+    What still holds, and is asserted below: recall is unchanged - both
+    entries are returned. Only the ORDER moves, and only because recency is
+    now a bounded nudge instead of the primary key.
     """
     now = datetime.now(timezone.utc)
 
@@ -538,9 +549,11 @@ async def test_search_text_old_low_relevance_ranks_below_fresh(engine):
 
     results = await engine.search(text="plasma")
 
+    # Recall is unchanged: both are still returned.
     assert len(results) == 2
-    assert results[0].id == fresh.id
-    assert results[1].id == old.id
+    # The order is the change: match strength decides, recency only nudges.
+    assert results[0].id == old.id
+    assert results[1].id == fresh.id
 
 
 @pytest.mark.asyncio

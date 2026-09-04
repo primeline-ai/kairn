@@ -8,6 +8,7 @@ import logging
 import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
@@ -16,7 +17,7 @@ from pydantic import Field
 from kairn.core.experience import ExperienceEngine
 from kairn.core.graph import GraphEngine
 from kairn.core.ideas import IdeaEngine
-from kairn.core.intelligence import IntelligenceLayer
+from kairn.core.intelligence import IntelligenceLayer, _reported_relevance
 from kairn.core.memory import ProjectMemory
 from kairn.core.router import ContextRouter
 from kairn.diagnostic import run_checks
@@ -30,8 +31,51 @@ def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, default=str)
 
 
+def _validate_experience_min_match(value: object) -> float:
+    """Range-check the ``experience_min_match`` config key, loudly.
+
+    The key is a bm25 match-strength FRACTION in [0.0, 1.0]. Out of range it
+    becomes a floor no score can ever clear, so recall comes back EMPTY - and
+    an empty result set is answer-shaped. "Nothing matched your query" and
+    "your configuration is broken" are different statements and must not
+    arrive looking identical, so this raises instead of clamping or defaulting.
+
+    Placed at the config-to-engine boundary because that is where the value
+    crosses from user input into the engine. `Config.load` and the
+    `IntelligenceLayer` constructor would each be a stronger home (they would
+    also cover a future third reader); both live in modules outside this
+    change's scope, so the check sits at every site that reads the key today
+    and the `test_f7_*` census is what keeps a new site from bypassing it.
+    """
+    try:
+        floor = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"experience_min_match must be a number in [0.0, 1.0], got {value!r}"
+        ) from exc
+    # NaN and +-inf fail this comparison too, which is the intent.
+    if not 0.0 <= floor <= 1.0:
+        raise ValueError(
+            f"experience_min_match must be a fraction in [0.0, 1.0], got {floor!r}. "
+            "It is a match-strength floor, NOT a percentage. The quantity it gates "
+            "is bm25 saturated into [0, 1) and scaled by term coverage, so it never "
+            "reaches 1.0 and any value above 1.0 is above every attainable score - "
+            "recall would silently return nothing at all. The reachable range also "
+            "grows with the store: measured against a row's own exact content, "
+            "match strength is ~0.000 on a one-row store, ~0.65 at five rows, "
+            "~0.76 at ten and ~0.92 at a thousand. Try 0.65 on a store of any "
+            "real size (it rejects a one-word question and passes a two-word "
+            "one), or 0.0 to switch the floor off."
+        )
+    return floor
+
+
 def create_server(db_path: str) -> FastMCP:
-    """Create FastMCP server: 22 tools (5 graph + kn_judge + kn_doctor + 3 project + 4 exp + 2 ideas + 6 intel including kn_learn with candidates)."""
+    """Create the FastMCP server: 22 tools.
+
+    5 graph + kn_judge + kn_doctor + 3 project + 4 experience + 2 ideas
+    + 6 intelligence (kn_learn included, with candidates).
+    """
     state: dict[str, Any] = {}
     # _lock serializes lazy init/teardown ONLY - tool bodies run unserialized
     # by design (weakness-audit rank 22). Correctness under concurrency is the
@@ -81,6 +125,11 @@ def create_server(db_path: str) -> FastMCP:
                 from kairn.core.embeddings import embedder_from_config
 
                 config = Config.load(Path(db_path).parent)
+                # Fail loud BEFORE the store is opened: an out-of-range
+                # floor used to empty every recall silently.
+                experience_min_match = _validate_experience_min_match(
+                    config.experience_min_match
+                )
                 embedder, embedder_model = embedder_from_config(config)
                 try:
                     store = SQLiteStore(
@@ -116,6 +165,7 @@ def create_server(db_path: str) -> FastMCP:
                     embedder_model=embedder_model,
                     semantic_recall=config.semantic_recall,
                     semantic_floor=config.semantic_recall_floor,
+                    experience_min_match=experience_min_match,
                     semantic_top_n=config.semantic_recall_top_n,
                 )
         return state
@@ -733,7 +783,11 @@ def create_server(db_path: str) -> FastMCP:
         min_relevance: Annotated[
             float,
             Field(
-                description="Minimum relevance 0.0-1.0",
+                description=(
+                    "Minimum TIME-DECAY relevance 0.0-1.0. This filters on age "
+                    "alone; the reported `relevance` is match-aware, so a "
+                    "returned row can read below this floor."
+                ),
                 ge=0.0,
                 le=1.0,
             ),
@@ -747,15 +801,31 @@ def create_server(db_path: str) -> FastMCP:
             Field(description="Pagination offset", ge=0),
         ] = 0,
     ) -> str:
-        """Decay-aware experience search."""
+        """Experience search. Filters on time-decay, reports match-aware relevance."""
         s = await _init()
+        # The abstention floor is a WORKSPACE policy, so it applies here too.
+        # Forwarding it at recall/crossref/context but not here was the same
+        # N-1-of-N shape as the missing constructor: kn_recall abstained while
+        # kn_memories flooded, on one store, for one query. Default 0.0 leaves
+        # this path byte-identical.
         experiences = await s["experience"].search(
             text=text,
             exp_type=type,
             min_relevance=min_relevance,
+            min_match=s["intel"].experience_min_match,
             limit=limit,
             offset=offset,
         )
+        # ONE scale for one search. `_reported_relevance` returns the
+        # match-aware composite the recall computed when the query had text,
+        # and pure decay for a browse query. Reporting `round(e.relevance(), 4)`
+        # here meant kn_memories and kn_recall answered the same question about
+        # the same store with two different quantities - on a fresh store this
+        # tool reported a flat 1.0 for every row while recall reported 0.18.
+        # NOTE: `min_relevance` above still gates on DECAY alone (see
+        # blend_match_and_recency); the reported number and the filter
+        # threshold are deliberately different axes.
+        now = datetime.now(UTC)
         items = [
             {
                 "id": e.id,
@@ -765,7 +835,7 @@ def create_server(db_path: str) -> FastMCP:
                 "namespace": e.namespace,
                 "content": e.content,
                 "confidence": e.confidence,
-                "relevance": round(e.relevance(), 4),
+                "relevance": _reported_relevance(e, now),
                 "tags": e.tags,
             }
             for e in experiences
@@ -1191,13 +1261,17 @@ def create_server(db_path: str) -> FastMCP:
             min_relevance=0.1,
             limit=20,
         )
+        # Same helper as kn_memories / kn_recall. This is a browse read, so it
+        # resolves to pure decay today; going through the shared helper is what
+        # keeps it correct if a text filter is ever added here.
+        now = datetime.now(UTC)
         items = [
             {
                 "id": e.id,
                 "type": e.type,
                 "content": e.content[:200],
                 "confidence": e.confidence,
-                "relevance": round(e.relevance(), 4),
+                "relevance": _reported_relevance(e, now),
             }
             for e in experiences
         ]
