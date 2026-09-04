@@ -21,17 +21,32 @@ class ContextRouter:
         self.store = store
         self.bus = event_bus
 
-    async def route(
-        self, text: str, *, limit: int = 10, min_confidence: float = 0.3
-    ) -> list[dict[str, Any]]:
-        """Extract keywords from text, find matching routes, return nodes."""
+    async def route_candidates(
+        self, text: str, *, min_confidence: float = 0.3
+    ) -> dict[str, float]:
+        """The full routed candidate set for `text`, id -> route confidence.
+
+        This is `route()` WITHOUT the truncation to `limit` and without the
+        per-id node fetch. It exists so a caller that wants to RANK the
+        candidates can see all of them first.
+
+        Why that matters, measured on a real 12.9k-node store over 40 hook
+        queries: the median query routes to 510 live candidates and `route()`
+        returns 10 of them. Because every route in that store carries the same
+        confidence (0.5), the 10 it keeps are an arbitrary slice. Ranking that
+        slice is not the same change as ranking the pool: the overlap between
+        "best 10 of the 10 you were handed" and "best 10 of all 510" had a
+        median of 0.10 - one node in ten.
+
+        Ordering is by confidence descending, which is what `route()` slices on.
+        """
         keywords = self._extract_keywords(text)
         if not keywords:
-            return []
+            return {}
 
         routes = await self.store.get_routes(keywords)
         if not routes:
-            return []
+            return {}
 
         node_scores: dict[str, float] = {}
         for route in routes:
@@ -47,26 +62,50 @@ class ContextRouter:
             for nid in node_ids:
                 node_scores[nid] = max(node_scores.get(nid, 0), route["confidence"])
 
-        sorted_ids = sorted(node_scores, key=lambda nid: node_scores[nid], reverse=True)
+        return {
+            nid: node_scores[nid]
+            for nid in sorted(node_scores, key=lambda n: node_scores[n], reverse=True)
+        }
 
-        # Collect until `limit` LIVE nodes are found instead of slicing first:
-        # soft-deleted ids stay in route arrays deliberately (restore_node
-        # keeps them routable), but they must not starve result slots
-        # (weakness-audit rank 62).
-        results = []
-        for nid in sorted_ids:
+    async def take_live(
+        self, candidates: dict[str, float], *, limit: int, skip: set[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Walk `candidates` in order and keep the first `limit` LIVE nodes.
+
+        Collect-until-limit instead of slice-then-fetch: soft-deleted ids stay
+        in route arrays deliberately (restore_node keeps them routable), but
+        they must not starve result slots (weakness-audit rank 62).
+
+        ONE DELIBERATE BEHAVIOUR CHANGE, at `limit <= 0`. The loop this replaces
+        appended a node BEFORE testing the count, so `route(limit=0)` returned
+        one node - it asked for nothing and got something. That is fixed here
+        rather than reproduced, and it is called out because the surrounding
+        refactor otherwise preserves `route()` exactly: external review of the
+        first version caught the blanket claim of "no behaviour change" being
+        false on this input. Pinned by `test_route_at_limit_zero_returns_nothing`.
+        """
+        skip = skip or set()
+        results: list[dict[str, Any]] = []
+        if limit <= 0:
+            return results
+        for nid, confidence in candidates.items():
+            if nid in skip:
+                continue
             node = await self.store.get_node(nid)
             if node:
-                results.append(
-                    {
-                        "node": node,
-                        "confidence": node_scores[nid],
-                    }
-                )
+                results.append({"node": node, "confidence": confidence})
                 if len(results) >= limit:
                     break
-
         return results
+
+    async def route(
+        self, text: str, *, limit: int = 10, min_confidence: float = 0.3
+    ) -> list[dict[str, Any]]:
+        """Extract keywords from text, find matching routes, return nodes."""
+        candidates = await self.route_candidates(text, min_confidence=min_confidence)
+        if not candidates:
+            return []
+        return await self.take_live(candidates, limit=limit)
 
     async def update_routes_for_node(
         self,
@@ -90,7 +129,22 @@ class ContextRouter:
     async def context(
         self, text: str, *, detail: str = "summary", limit: int = 10
     ) -> dict[str, Any]:
-        """Get relevant context subgraph with progressive disclosure."""
+        """Get relevant context subgraph with progressive disclosure.
+
+        THIS SURFACE IS NOT RANKED, AND THAT IS RECORDED RATHER THAN HIDDEN.
+        `IntelligenceLayer.context()` scores the routed candidates by bm25
+        restricted to their ids and returns them best first. This method still
+        returns `route()`'s order, which on a real store is arbitrary because
+        every route carries the same confidence.
+
+        It was left alone deliberately, not missed. It has no caller in the
+        package or in the MCP server - `kn_context` and the `kairn context` CLI
+        both go through `IntelligenceLayer` - so the only consumers are this
+        repo's own tests. Ranking here would mean moving the scoring helpers out
+        of `core.intelligence` (which imports this module, so importing back is
+        a cycle), and that refactor does not belong stacked on the change that
+        introduced the ranking. Prefer `IntelligenceLayer.context()`.
+        """
         results = await self.route(text, limit=limit)
 
         nodes = []

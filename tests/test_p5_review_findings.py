@@ -208,12 +208,36 @@ class TestCrossrefSortsOneScale:
         )
 
     @pytest.mark.asyncio
-    async def test_the_best_match_leads(self, ranked):
-        """With both kinds on one scale the 4-of-4 match is first."""
+    async def test_the_best_match_leads_its_own_group(self, ranked):
+        """NARROWED, and the narrowing is the finding.
+
+        This asserted `results[0]` was the 4-of-4 experience, which held while
+        crossref ended in a plain sort. It no longer does: the sort is followed
+        by `_allocate_across_sources`, which interleaves one row from each
+        source in turn, nodes first, so slot 0 is always a node whenever any
+        node matched.
+
+        Those two rules genuinely conflict and the conflict was resolved in
+        favour of allocation, because the two claims are not worth the same.
+        F1's harm was that the strong experience was DROPPED by the truncation,
+        and allocation is what prevents that - it guarantees a share of the
+        budget to each source regardless of scores. "The best row is first" is
+        a nicer property but nobody loses an answer to it. So the guarantee
+        kept is: the strong match is returned, and it leads its own group.
+
+        The stronger claim survives one function away, in `recall`, and is
+        pinned there. Here it is deliberately not claimed."""
         results = await ranked.crossref(problem=QUERY, limit=10)
 
-        assert results[0]["source"] == "experience"
-        assert results[0]["content"] == STRONG
+        exps = [r for r in results if r["source"] == "experience"]
+        assert exps, "the 4-of-4 experience was not returned at all"
+        assert exps[0]["content"] == STRONG, (
+            "the strong experience did not lead the experience group: "
+            f"{[(r['relevance'], r['content'][:30]) for r in exps]}"
+        )
+        # And it is not merely present at the end of a node-filled list: the
+        # allocation must have given it an early slot.
+        assert results.index(exps[0]) <= 1, [r["source"] for r in results]
 
     @pytest.mark.asyncio
     async def test_a_strong_node_still_outranks_a_weak_experience(self, tmp_path):

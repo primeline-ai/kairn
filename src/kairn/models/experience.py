@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
+from kairn.relevance import RELEVANCE_KIND_MATCH_RECENCY, RELEVANCE_KIND_RECENCY
+
 VALID_TYPES = {"solution", "pattern", "decision", "workaround", "gotcha", "preference"}
 VALID_CONFIDENCES = {"high", "medium", "low"}
 
@@ -84,6 +86,19 @@ class Experience(BaseModel):
             return self.recall_relevance
         return round(self.relevance(at=at), decimals)
 
+    def reported_relevance_kind(self) -> str:
+        """WHICH quantity `reported_relevance` just returned.
+
+        Same input, same branch, one method away - so the label cannot drift
+        away from the number it describes. Reporting a match-aware composite
+        under the RECENCY label is the mislabelling `kairn.relevance` was
+        written to prevent, and after this branch made the experience path
+        match-aware that label became wrong on every text query.
+        """
+        if self.recall_relevance is not None:
+            return RELEVANCE_KIND_MATCH_RECENCY
+        return RELEVANCE_KIND_RECENCY
+
     def to_storage(self) -> dict:
         return self.model_dump()
 
@@ -99,8 +114,10 @@ class Experience(BaseModel):
             "content": self.content,
             "confidence": self.confidence,
             # 3 decimals is this method's own wire contract and is kept;
-            # what changed is WHICH quantity gets rounded.
+            # what changed is WHICH quantity gets rounded - and the label
+            # moves with it.
             "relevance": self.reported_relevance(decimals=3),
+            "relevance_kind": self.reported_relevance_kind(),
         }
         if detail != "summary":
             data.update(

@@ -7,9 +7,10 @@
 
 <!-- mcp-name: io.github.primeline-ai/kairn -->
 
-**Status: Alpha.** The API and CLI are functional and tested (see
-[Development](#development)), but interfaces may still change between
-releases. Feedback and issues welcome.
+**Status: pre-1.0.** In daily use since February 2026, with 722 tests (see
+[Development](#development)) and a published
+[LongMemEval-S benchmark](#benchmarks). Interfaces may still change between
+releases until 1.0. Feedback and issues welcome.
 
 Other tools give your AI a memory. **Kairn** gives it a knowledge graph with intelligent context routing. It knows what to load, when to load it, and how much - so your AI stays focused, not overwhelmed.
 
@@ -147,12 +148,14 @@ Start a **new** session and ask it to recall the same thing - that calls `kn_rec
 
 ```json
 {"_v": "1.0", "count": 2, "results": [
-  {"source": "node", "id": "002d9c22", "name": "Decision: we chose Postgres over SQLite for the analytics service beca", "type": "learned_decision", "description": "we chose Postgres over SQLite for the analytics service because we needed concurrent writers", "relevance": 1.0},
-  {"source": "experience", "id": "d0710c2f", "type": "decision", "content": "we chose Postgres over SQLite for the analytics service because we needed concurrent writers", "confidence": "high", "relevance": 1.0}
+  {"source": "node", "id": "002d9c22", "name": "Decision: we chose Postgres over SQLite for the analytics service beca", "type": "learned_decision", "description": "we chose Postgres over SQLite for the analytics service because we needed concurrent writers", "relevance": 1.0, "relevance_kind": "match"},
+  {"source": "experience", "id": "d0710c2f", "type": "decision", "content": "we chose Postgres over SQLite for the analytics service because we needed concurrent writers", "confidence": "high", "relevance": 1.0, "relevance_kind": "recency"}
 ]}
 ```
 
 `kn_learn` stored both a permanent graph node and a decaying experience (high confidence does both, see [Confidence routing](#decay-model)); `kn_recall` found both from a three-word topic.
+
+**Read `relevance_kind` before you read `relevance`.** Both rows above show `1.0` and they do not mean the same thing. `match` is lexical match strength (bm25); the experience's `recency` is time-decay - it is 1.0 because the row was created seconds ago, not because it matched well. A third value, `similarity`, is embedding cosine on the semantic-recall path, and `unscored` marks a row the surface had no ranking for and filled in with a constant. The numbers are not comparable across kinds, so do not sort a mixed result set on `relevance` alone. Same caution for `min_relevance` on `kn_recall`: it gates nodes on match strength and experiences on recency, one number against two scales. On `kn_memories` and `kn_prune`, which see experiences only, it is recency - and on `kn_prune` it **deletes**.
 
 Run `kairn status ~/brain` any time as a smoke test - if it prints a JSON stats block (nodes/edges/experiences counts), the workspace is healthy. Want a scripted tour of every core feature instead of doing it by hand? Run `kairn demo ~/brain` - it walks through node creation, querying, experience saving, learning, recall, and context in about 30 seconds.
 
@@ -420,15 +423,24 @@ src/kairn/
 
 ## Performance
 
-Typical operation times on modern hardware:
+Measure it yourself rather than trusting this table:
 
-| Operation | Time |
-|-----------|------|
-| `kn_add` | 2-5ms |
-| `kn_query` (100 nodes) | 5-15ms |
-| `kn_connect` | 1-3ms |
-| `kn_recall` (graph traversal) | 10-50ms |
-| `kn_crossref` (similarity search) | 20-100ms |
+```bash
+kairn benchmark ~/brain --nodes 100
+```
+
+One run of that command, 100 nodes, on an Apple M4 Pro:
+
+| Operation | Measured |
+|-----------|----------|
+| Insert | 0.7ms per node (1,479 ops/sec) |
+| FTS5 query | 0.2ms (5,552 ops/sec) |
+| Graph traversal | 6.0ms (166 ops/sec) |
+
+Single run on one machine, so treat it as a shape rather than a spec - which is
+why the command is above the table. `kn_connect` and `kn_crossref` used to
+appear here with figures the benchmark does not produce; they have been removed
+rather than estimated.
 
 ## Used By
 

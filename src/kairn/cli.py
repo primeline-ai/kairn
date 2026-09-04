@@ -46,6 +46,7 @@ from rich.table import Table
 
 from kairn import __version__
 from kairn.config import Config
+from kairn.relevance import RELEVANCE_KIND_RECENCY
 from kairn.storage.metadata_store import MetadataStore
 from kairn.storage.sqlite_store import SQLiteStore
 
@@ -619,7 +620,7 @@ def learn(
     "--min-relevance",
     default=0.0,
     type=click.FloatRange(0.0, 1.0),
-    help="Minimum relevance filter",
+    help="Minimum score. Gates NODES on match strength and EXPERIENCES on recency",
 )
 def recall(path: str, topic: str | None, limit: int, min_relevance: float) -> None:
     """Surface relevant past knowledge (cross-searches nodes + experiences)."""
@@ -682,8 +683,9 @@ def context(path: str, keywords: str, detail: str, limit: int) -> None:
     default=0.0,
     type=click.FloatRange(0.0, 1.0),
     help=(
-        "Minimum TIME-DECAY relevance. Filters on age alone; the reported "
-        "relevance is match-aware, so a row can read below this floor."
+        "Minimum RECENCY filter (time-decay), not match quality. It gates on "
+        "age ALONE, while the reported relevance is match-aware, so a returned "
+        "row can read below this floor - see relevance_kind on each row."
     ),
 )
 @click.option("--limit", default=10, type=click.IntRange(1, 50), help="Max results")
@@ -732,6 +734,7 @@ def memories(
                     "content": e.content,
                     "confidence": e.confidence,
                     "relevance": _reported_relevance(e, now),
+                    "relevance_kind": e.reported_relevance_kind(),
                     "tags": e.tags,
                 }
                 for e in experiences
@@ -1108,7 +1111,7 @@ def remove(
     "--threshold",
     default=0.01,
     type=click.FloatRange(0.0, 1.0),
-    help="Remove experiences below this relevance",
+    help="DELETE experiences below this RECENCY (time-decay age), not match quality",
 )
 def prune(path: str, threshold: float) -> None:
     """Remove expired experiences below the relevance threshold."""
