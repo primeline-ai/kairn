@@ -115,7 +115,16 @@ def to_fts_query(text: str) -> str | None:
     keywords = fts_keywords(text)
     if not keywords:
         return None
-    return " OR ".join(f'"{w}"' for w in keywords)
+    # DEDUPED, first-seen order. `fts_keywords` returns every OCCURRENCE, so a
+    # pasted document used to produce an OR-query that repeated the same
+    # handful of words thousands of times. Duplicated OR terms cannot change
+    # an FTS5 result set, but they cost quadratically: measured on a
+    # 15k-node / 12k-experience store with a THREE-term vocabulary, 1 repeat
+    # searched in 7 ms, 500 in 1.7 s, 2,000 in 26 s and 4,000 did not finish
+    # inside 45 s. The first-move hook caps its store call at 1.5 s, so the
+    # prompts that carry the most content are exactly the ones whose block
+    # silently disappeared. A query now costs what its VOCABULARY costs.
+    return " OR ".join(f'"{w}"' for w in dict.fromkeys(keywords))
 
 
 # Backward-compatible private alias. Historical callers (and the LongMemEval

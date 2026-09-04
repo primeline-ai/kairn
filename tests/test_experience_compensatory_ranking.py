@@ -203,3 +203,50 @@ class TestTheSortIsNotQuantised:
         assert narrow.id in ids and full.id in ids, "sanity: both must be retrieved"
         assert ids[0] == full.id, [(r.content[:40], r.recall_relevance) for r in results]
 
+
+class TestQueryLengthIsBoundedByDistinctTerms:
+    """A long prompt must cost what its VOCABULARY costs, not what its LENGTH
+    costs.
+
+    `to_fts_query` joined every keyword OCCURRENCE, so a pasted document
+    produced an FTS5 query that repeated the same handful of words thousands
+    of times. Measured on the 15,055-node / 11,954-experience snapshot before
+    the fix, with a query of only THREE distinct terms:
+
+        repeats   query chars   search
+              1            35     7 ms
+            100         3,896    92 ms
+            500        19,496   1.7 s
+          1,000        38,996   6.5 s
+          2,000        77,996    26 s
+          4,000            --   killed at 45 s
+
+    Roughly quadratic in prompt length, and it matters in production: the
+    first-move hook caps its store call at 1.5 s, so exactly the prompts that
+    carry the most content are the ones the block silently disappears for.
+    Duplicated OR terms cannot change an FTS5 result set, so this is free.
+    """
+
+    def test_repeats_do_not_grow_the_query(self):
+        from kairn.core.fts import to_fts_query
+
+        once = to_fts_query("werkzeug pairing ledger")
+        thousand = to_fts_query("werkzeug pairing ledger " * 1000)
+        assert once == thousand
+
+    def test_first_seen_order_survives(self):
+        from kairn.core.fts import to_fts_query
+
+        assert to_fts_query("ledger werkzeug ledger pairing") == (
+            '"ledger" OR "werkzeug" OR "pairing"'
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_repeated_prompt_returns_what_the_short_one_does(self, engine):
+        """The control that makes the dedup safe: same rows, same order."""
+        await engine.save(content="werkzeug pairing ledger union", type="gotcha")
+        await engine.save(content="werkzeug alone", type="gotcha")
+        short = await engine.search(text="werkzeug pairing ledger", limit=10)
+        longq = await engine.search(text="werkzeug pairing ledger " * 200, limit=10)
+        assert [e.id for e in short] == [e.id for e in longq]
+
