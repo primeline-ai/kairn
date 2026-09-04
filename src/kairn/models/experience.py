@@ -22,6 +22,11 @@ class Experience(BaseModel):
     context: str | None = None
     confidence: str = "high"
     score: float = 1.0
+    # Match-aware relevance for THIS recall, set by ExperienceEngine.search()
+    # when a text query was given. Never persisted - `relevance()` remains pure
+    # time-decay, so decay and match strength stay orthogonal in the model and
+    # only the RECALL composes them.
+    recall_relevance: float | None = None
     decay_rate: float
     tags: list[str] | None = None
     properties: dict | None = None

@@ -12,7 +12,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from kairn.core.fts import _STOP_WORDS, fts_keywords, to_fts_query
+from kairn.core.fts import _STOP_WORDS, bm25_to_relevance, fts_keywords, to_fts_query
 from kairn.events.bus import EventBus
 from kairn.events.types import EventType
 from kairn.models.experience import VALID_CONFIDENCES, VALID_TYPES, Experience
@@ -378,6 +378,7 @@ class ExperienceEngine:
         text: str | None = None,
         exp_type: str | None = None,
         min_relevance: float = 0.0,
+        min_match: float = 0.0,
         limit: int = 10,
         offset: int = 0,
     ) -> list[Experience]:
@@ -425,11 +426,31 @@ class ExperienceEngine:
         scored: list[tuple[Experience, float]] = []
         for data in results:
             exp = Experience(**data)
-            current_relevance = exp.relevance(at=now)
+            decay_relevance = exp.relevance(at=now)
+            # A text query carries match strength; pure decay does not. Gating
+            # on decay alone let a fresh experience score ~0.98 against ANY
+            # query that retrieved it at all, so min_relevance was decorative
+            # here exactly as it was on the node path before the bm25 fix.
+            # `relevance()` itself stays pure decay - the composition happens
+            # in the RECALL, not in the model.
+            if fts_text is not None:
+                exp.recall_relevance = round(
+                    decay_relevance * bm25_to_relevance(data.get("rank")), 4
+                )
 
             # Apply min_relevance filter
-            if current_relevance >= min_relevance:
-                scored.append((exp, current_relevance))
+            # `min_relevance` KEEPS ITS MEANING - a decay threshold. Gating it
+            # on the composite instead was tried and reverted: bm25 magnitude
+            # scales with corpus size, so on a small store every score collapses
+            # and any positive floor filters everything. Three existing tests
+            # caught exactly that, and they were right.
+            if decay_relevance < min_relevance:
+                continue
+            # Abstention is opt-in and orthogonal, so the default path is
+            # byte-identical to before.
+            if min_match and bm25_to_relevance(data.get("rank")) < min_match:
+                continue
+            scored.append((exp, decay_relevance))
 
         if fts_text is not None:
             # Match strength stays primary: quantize relevance into coarse
@@ -453,6 +474,7 @@ class ExperienceEngine:
         text: str | None = None,
         exp_type: str | None = None,
         min_relevance: float = 0.0,
+        min_match: float = 0.0,
         limit: int = 10,
         as_of: str | None = None,
     ) -> list[Experience]:
@@ -521,9 +543,19 @@ class ExperienceEngine:
                 vf_day = normalize_date_prefix(exp.valid_from)
                 if vf_day is not None and vf_day > as_of_day:
                     continue
-            current_relevance = exp.relevance(at=now)
-            if current_relevance >= min_relevance:
-                scored.append((exp, current_relevance))
+            decay_relevance = exp.relevance(at=now)
+            # Same composition as search() - this is the SECOND gate on the
+            # same defect, and fixing only the first one would look exactly
+            # like a fix while bi-temporal recall kept leaking.
+            if fts_text is not None:
+                exp.recall_relevance = round(
+                    decay_relevance * bm25_to_relevance(data.get("rank")), 4
+                )
+            if decay_relevance < min_relevance:
+                continue
+            if min_match and bm25_to_relevance(data.get("rank")) < min_match:
+                continue
+            scored.append((exp, decay_relevance))
 
         if fts_text is not None:
             scored.sort(key=lambda pair: relevance_bucket(pair[1]), reverse=True)

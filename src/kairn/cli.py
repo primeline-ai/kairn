@@ -448,6 +448,7 @@ async def _build_intel_stack(db_path: Path):
         embedder_model=embedder_model,
         semantic_recall=config.semantic_recall,
         semantic_floor=config.semantic_recall_floor,
+        experience_min_match=config.experience_min_match,
         semantic_top_n=config.semantic_recall_top_n,
     )
     return store, intel
