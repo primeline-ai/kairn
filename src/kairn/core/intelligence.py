@@ -16,7 +16,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from kairn.core.experience import ExperienceEngine
-from kairn.core.fts import BM25_RELEVANCE_MIDPOINT, _to_fts_query, bm25_to_relevance  # used here + re-exported for back-compat
+from kairn.core.fts import (  # used here + re-exported for back-compat
+    BM25_RELEVANCE_MIDPOINT,
+    _to_fts_query,
+    bm25_to_relevance,
+    term_coverage,
+)
 from kairn.core.graph import GraphEngine
 from kairn.core.ideas import IdeaEngine
 from kairn.core.memory import ProjectMemory
@@ -74,38 +79,10 @@ def _fts_terms(fts_query: str | None) -> list[str]:
     return re.findall(r'"([^"]+)"', fts_query)
 
 
-def _term_coverage(terms: list[str], *fields: str | None) -> float:
-    """Fraction of distinct query terms that actually occur in `fields`.
-
-    WHY THIS EXISTS. `to_fts_query` joins terms with OR so that ANY keyword can
-    match - that is deliberate, and it is what gives Kairn its recall. But bm25
-    then scores the document on whatever did match, and the saturating
-    transform above only ever sees that aggregate score. It has no way to tell
-    a 1-of-6 match from a 6-of-6 one.
-
-    Measured consequence before this fix (12,866-node store, 2026-08-22): the
-    query "baroque harpsichord tuning temperament werckmeister" - which has no
-    real overlap with the corpus - returned hits at relevance 0.60 by matching
-    the single word "tuning" against "autoevolve self-tuning". Genuinely
-    relevant queries scored 0.67-0.73. An 0.08 separation band makes
-    `min_relevance` decorative and abstention structurally impossible, which is
-    exactly what the `_BM25_RELEVANCE_MIDPOINT` docstring above promises it is
-    not ("weak keyword overlaps fall under a strict min_relevance floor while
-    strong multi-term matches clear it").
-
-    Scaling relevance by coverage implements that promise: match strength times
-    how much of the question you actually answered. Ordering within a single
-    query is preserved for equal-coverage candidates, and recall is unchanged -
-    a partial match is still RETURNED, it is just no longer scored as if it
-    were a full one.
-    """
-    if not terms:
-        return 1.0
-    haystack = " ".join(f.lower() for f in fields if f)
-    if not haystack:
-        return 0.0
-    hits = sum(1 for term in {t.lower() for t in terms} if term in haystack)
-    return hits / len({t.lower() for t in terms})
+# Moved to `core.fts` so the EXPERIENCE path can use it too (it could not
+# import this module - `intelligence` imports `experience`). The private name
+# stays as the alias every call site here already uses.
+_term_coverage = term_coverage
 
 
 class IntelligenceLayer:

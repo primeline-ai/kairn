@@ -12,7 +12,15 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from kairn.core.fts import _STOP_WORDS, bm25_to_relevance, fts_keywords, to_fts_query
+from kairn.core.fts import (
+    _STOP_WORDS,
+    blend_match_and_recency,
+    bm25_match,
+    bm25_to_relevance,
+    fts_keywords,
+    term_coverage,
+    to_fts_query,
+)
 from kairn.events.bus import EventBus
 from kairn.events.types import EventType
 from kairn.models.experience import VALID_CONFIDENCES, VALID_TYPES, Experience
@@ -275,6 +283,22 @@ class ExperienceEngine:
         self.store = store
         self.event_bus = event_bus
 
+
+    @staticmethod
+    def _score_row(data: dict, decay_relevance: float, terms: list[str]) -> float:
+        """The ONE sort key for a text query, used by BOTH gates.
+
+        `match` is bm25 scaled by how much of the question the row actually
+        answered; the blend then nudges it by recency inside a bounded band.
+        Written once because a fix applied to one of two gates looks exactly
+        like a fix while the other keeps leaking (Kairn `d5272a91`) - which is
+        the reason `search_bitemporal` carries the same comment.
+        """
+        match = bm25_match(data.get("rank")) * term_coverage(
+            terms, data.get("content"), data.get("context")
+        )
+        return blend_match_and_recency(match=match, decay=decay_relevance)
+
     async def save(
         self,
         *,
@@ -408,10 +432,12 @@ class ExperienceEngine:
         fts_text: str | None
         if text is not None:
             fts_text = to_fts_query(text)
+            query_terms = fts_keywords(text)
             if fts_text is None:
                 return []
         else:
             fts_text = None
+            query_terms = []
 
         # Query from store (the FTS path returns rows in BM25 match order)
         results = await self.store.query_experiences(
@@ -433,10 +459,14 @@ class ExperienceEngine:
             # here exactly as it was on the node path before the bm25 fix.
             # `relevance()` itself stays pure decay - the composition happens
             # in the RECALL, not in the model.
+            sort_value = decay_relevance
             if fts_text is not None:
-                exp.recall_relevance = round(
-                    decay_relevance * bm25_to_relevance(data.get("rank")), 4
-                )
+                sort_value = self._score_row(data, decay_relevance, query_terms)
+                # The REPORTED score is the sort key. A number a caller reads
+                # must not contradict the order it arrives in - the same
+                # defect this file already fixed one level down, where the
+                # reported relevance was pure decay.
+                exp.recall_relevance = round(sort_value, 6)
 
             # Apply min_relevance filter
             # `min_relevance` KEEPS ITS MEANING - a decay threshold. Gating it
@@ -450,18 +480,16 @@ class ExperienceEngine:
             # byte-identical to before.
             if min_match and bm25_to_relevance(data.get("rank")) < min_match:
                 continue
-            scored.append((exp, decay_relevance))
+            scored.append((exp, sort_value))
 
-        if fts_text is not None:
-            # Match strength stays primary: quantize relevance into coarse
-            # buckets and stable-sort by bucket, so the store's BM25 order
-            # survives within each bucket. Sorting by exact relevance would
-            # collapse to pure recency (microsecond created_at differences
-            # make every value unique) and discard match strength.
-            scored.sort(key=lambda pair: relevance_bucket(pair[1]), reverse=True)
-        else:
-            # No match signal without text: exact relevance is the order.
-            scored.sort(key=lambda pair: pair[1], reverse=True)
+        # ONE compensatory score, both branches. The decay BUCKET is gone:
+        # quantizing recency and stable-sorting inside the bucket is a
+        # lexicographic sort that lets a fresh weak match outrank an old
+        # strong one, which is the mechanism Kairn `cec86cb9` names behind
+        # "the injector keeps showing me recent notes I do not need". With a
+        # text query `pair[1]` is the blend; without one it is pure decay,
+        # because there is no match strength to compose.
+        scored.sort(key=lambda pair: pair[1], reverse=True)
 
         experiences = [exp for exp, _ in scored]
 
@@ -523,10 +551,12 @@ class ExperienceEngine:
         fts_text: str | None
         if text is not None:
             fts_text = to_fts_query(text)
+            query_terms = fts_keywords(text)
             if fts_text is None:
                 return []
         else:
             fts_text = None
+            query_terms = []
 
         results = await self.store.query_experiences(
             text=fts_text, exp_type=exp_type, limit=100000, offset=0
@@ -547,20 +577,22 @@ class ExperienceEngine:
             # Same composition as search() - this is the SECOND gate on the
             # same defect, and fixing only the first one would look exactly
             # like a fix while bi-temporal recall kept leaking.
+            sort_value = decay_relevance
             if fts_text is not None:
-                exp.recall_relevance = round(
-                    decay_relevance * bm25_to_relevance(data.get("rank")), 4
-                )
+                sort_value = self._score_row(data, decay_relevance, query_terms)
+                # The REPORTED score is the sort key. A number a caller reads
+                # must not contradict the order it arrives in - the same
+                # defect this file already fixed one level down, where the
+                # reported relevance was pure decay.
+                exp.recall_relevance = round(sort_value, 6)
             if decay_relevance < min_relevance:
                 continue
             if min_match and bm25_to_relevance(data.get("rank")) < min_match:
                 continue
-            scored.append((exp, decay_relevance))
+            scored.append((exp, sort_value))
 
-        if fts_text is not None:
-            scored.sort(key=lambda pair: relevance_bucket(pair[1]), reverse=True)
-        else:
-            scored.sort(key=lambda pair: pair[1], reverse=True)
+        # Same single key as search() - see the comment there.
+        scored.sort(key=lambda pair: pair[1], reverse=True)
 
         ordered = [exp for exp, _ in scored]
         # Session/entity diversification is an operator-toggleable kill-switch
