@@ -115,10 +115,43 @@ def to_fts_query(text: str) -> str | None:
     keywords = fts_keywords(text)
     if not keywords:
         return None
-    return " OR ".join(f'"{w}"' for w in keywords)
+    # DEDUPED, first-seen order. `fts_keywords` returns every OCCURRENCE, so a
+    # pasted document used to produce an OR-query that repeated the same
+    # handful of words thousands of times. Duplicated OR terms cannot change
+    # an FTS5 result set, but they cost quadratically: measured on a
+    # 15k-node / 12k-experience store with a THREE-term vocabulary, 1 repeat
+    # searched in 7 ms, 500 in 1.7 s, 2,000 in 26 s and 4,000 did not finish
+    # inside 45 s. The first-move hook caps its store call at 1.5 s, so the
+    # prompts that carry the most content are exactly the ones whose block
+    # silently disappeared. A query now costs what its VOCABULARY costs.
+    return " OR ".join(f'"{w}"' for w in dict.fromkeys(keywords))
 
 
 # Backward-compatible private alias. Historical callers (and the LongMemEval
 # benchmark harness) import the underscore name from core.intelligence; that
 # re-export now resolves here.
 _to_fts_query = to_fts_query
+
+
+# bm25 score at which relevance = 0.5. Larger => the same bm25 match maps to a
+# lower relevance, so weak keyword overlaps fall under a strict min_relevance
+# floor while strong multi-term matches clear it.
+BM25_RELEVANCE_MIDPOINT = 5.0
+
+
+def bm25_to_relevance(rank: float | None) -> float:
+    """Map an FTS5 bm25 `rank` to a bounded (0, 1] relevance.
+
+    SQLite FTS5 exposes bm25 as a negative score where a more-negative value
+    means a stronger match. A saturating transform (score / (score + K))
+    preserves the raw bm25 ordering while yielding an absolute-ish relevance a
+    min_relevance gate can act on. `rank is None` (a browse query with no
+    MATCH) has no match strength to report, so it stays 1.0.
+
+    Lives here rather than in `intelligence` because BOTH the node path and the
+    experience path need it, and `intelligence` imports `experience`.
+    """
+    if rank is None:
+        return 1.0
+    score = max(0.0, -float(rank))
+    return round(score / (score + BM25_RELEVANCE_MIDPOINT), 4)
