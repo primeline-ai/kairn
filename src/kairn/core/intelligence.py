@@ -5,6 +5,8 @@ Bridges graph, experience, and router engines into unified knowledge operations.
 
 from __future__ import annotations
 
+import re
+
 import asyncio
 import logging
 import sqlite3
@@ -56,6 +58,52 @@ def _bm25_to_relevance(rank: float | None) -> float:
         return 1.0
     score = max(0.0, -float(rank))
     return round(score / (score + _BM25_RELEVANCE_MIDPOINT), 4)
+
+
+def _fts_terms(fts_query: str | None) -> list[str]:
+    """Recover the individual terms from a `to_fts_query` output.
+
+    `to_fts_query` emits `"a" OR "b" OR "c"`, so the quoted spans are exactly
+    the searchable terms. Returns [] for a browse query (None) or a malformed
+    string, which callers treat as "no coverage signal available".
+    """
+    if not fts_query:
+        return []
+    return re.findall(r'"([^"]+)"', fts_query)
+
+
+def _term_coverage(terms: list[str], *fields: str | None) -> float:
+    """Fraction of distinct query terms that actually occur in `fields`.
+
+    WHY THIS EXISTS. `to_fts_query` joins terms with OR so that ANY keyword can
+    match - that is deliberate, and it is what gives Kairn its recall. But bm25
+    then scores the document on whatever did match, and the saturating
+    transform above only ever sees that aggregate score. It has no way to tell
+    a 1-of-6 match from a 6-of-6 one.
+
+    Measured consequence before this fix (12,866-node store, 2026-08-22): the
+    query "baroque harpsichord tuning temperament werckmeister" - which has no
+    real overlap with the corpus - returned hits at relevance 0.60 by matching
+    the single word "tuning" against "autoevolve self-tuning". Genuinely
+    relevant queries scored 0.67-0.73. An 0.08 separation band makes
+    `min_relevance` decorative and abstention structurally impossible, which is
+    exactly what the `_BM25_RELEVANCE_MIDPOINT` docstring above promises it is
+    not ("weak keyword overlaps fall under a strict min_relevance floor while
+    strong multi-term matches clear it").
+
+    Scaling relevance by coverage implements that promise: match strength times
+    how much of the question you actually answered. Ordering within a single
+    query is preserved for equal-coverage candidates, and recall is unchanged -
+    a partial match is still RETURNED, it is just no longer scored as if it
+    were a full one.
+    """
+    if not terms:
+        return 1.0
+    haystack = " ".join(f.lower() for f in fields if f)
+    if not haystack:
+        return 0.0
+    hits = sum(1 for term in {t.lower() for t in terms} if term in haystack)
+    return hits / len({t.lower() for t in terms})
 
 
 class IntelligenceLayer:
@@ -318,9 +366,14 @@ class IntelligenceLayer:
             ranked = await self.graph.query_ranked(text=fts_query, limit=limit)
         else:
             ranked = await self.graph.query_ranked(limit=limit)
+        terms = _fts_terms(fts_query)
         out: list[dict[str, Any]] = []
         for node, rank in ranked:
             relevance = _bm25_to_relevance(rank)
+            if terms:
+                relevance = round(
+                    relevance * _term_coverage(terms, node.name, node.description), 4
+                )
             if relevance < min_relevance:
                 continue
             out.append(
