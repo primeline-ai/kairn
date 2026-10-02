@@ -20,7 +20,7 @@ BUNDLE = REPO / "packaging" / "mcpb"
 
 
 def _toml_version(path: Path) -> str:
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         m = re.match(r'^version\s*=\s*"([^"]+)"', line.strip())
         if m:
             return m.group(1)
@@ -28,16 +28,16 @@ def _toml_version(path: Path) -> str:
 
 
 def _sites() -> dict[str, str]:
-    manifest = json.loads((BUNDLE / "manifest.json").read_text())
-    bundle_toml = (BUNDLE / "pyproject.toml").read_text()
+    manifest = json.loads((BUNDLE / "manifest.json").read_text(encoding="utf-8"))
+    bundle_toml = (BUNDLE / "pyproject.toml").read_text(encoding="utf-8")
     pin = re.search(r'kairn-ai==([0-9][^"\s]*)', bundle_toml)
     assert pin, "bundle pyproject.toml must pin kairn-ai to an exact version"
 
-    server_py = (REPO / "src" / "kairn" / "server.py").read_text()
+    server_py = (REPO / "src" / "kairn" / "server.py").read_text(encoding="utf-8")
     fastmcp_version = re.search(r'FastMCP\(\s*"kairn"\s*,\s*version="([^"]+)"', server_py)
     assert fastmcp_version, "could not read the version passed to FastMCP"
 
-    init_py = (REPO / "src" / "kairn" / "__init__.py").read_text()
+    init_py = (REPO / "src" / "kairn" / "__init__.py").read_text(encoding="utf-8")
     dunder = re.search(r'__version__\s*=\s*"([^"]+)"', init_py)
     assert dunder, "could not read __version__ from src/kairn/__init__.py"
 
@@ -45,11 +45,11 @@ def _sites() -> dict[str, str]:
     # stale, and `uv run` then silently re-resolves at the user's first launch -
     # needing network and write access inside the extension directory - instead
     # of using the locked hashes.
-    lock = (BUNDLE / "uv.lock").read_text()
+    lock = (BUNDLE / "uv.lock").read_text(encoding="utf-8")
     locked = re.search(r'name = "kairn-ai"\nversion = "([^"]+)"', lock)
     assert locked, "could not read the kairn-ai pin from uv.lock"
 
-    server_json = json.loads((REPO / "server.json").read_text())
+    server_json = json.loads((REPO / "server.json").read_text(encoding="utf-8"))
     reg_pkg = server_json["packages"][0]
 
     return {
@@ -114,8 +114,8 @@ def test_registry_asset_url_names_the_same_version():
     entry would advertise a new version while shipping the previous artifact.
     Nothing else notices, because the file downloads fine.
     """
-    pkg = json.loads((REPO / "server.json").read_text())["packages"][0]
-    version = json.loads((REPO / "server.json").read_text())["version"]
+    pkg = json.loads((REPO / "server.json").read_text(encoding="utf-8"))["packages"][0]
+    version = json.loads((REPO / "server.json").read_text(encoding="utf-8"))["version"]
     assert f"/v{version}/" in pkg["identifier"], pkg["identifier"]
     assert pkg["identifier"].endswith(f"kairn-{version}.mcpb"), pkg["identifier"]
 
@@ -137,8 +137,8 @@ def test_readme_source_carries_the_registry_ownership_token():
     The token sits inside an HTML comment: invisible on GitHub and PyPI, and the
     validator accepts a comment close as a boundary.
     """
-    name = json.loads((REPO / "server.json").read_text())["name"]
-    text = (REPO / "README.md").read_text()
+    name = json.loads((REPO / "server.json").read_text(encoding="utf-8"))["name"]
+    text = (REPO / "README.md").read_text(encoding="utf-8")
     token = f"mcp-name: {name}"
     assert token in text, f"README must contain '{token}'"
     after = text.split(token, 1)[1][:4]

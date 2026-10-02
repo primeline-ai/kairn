@@ -40,6 +40,7 @@ from kairn.core.router import ContextRouter
 from kairn.events.bus import EventBus
 from kairn.models.experience import Experience
 from kairn.relevance import (
+    RELEVANCE_KIND_MATCH_RECENCY,
     RELEVANCE_KIND_MATCH,
     RELEVANCE_KIND_RECENCY,
     RELEVANCE_KIND_SIMILARITY,
@@ -105,10 +106,21 @@ def offenders(payload) -> list[dict]:
 
 
 EXPECTED_BY_SOURCE = {
-    "experience": {RELEVANCE_KIND_RECENCY},
+    # UPDATED when the experience path became match-aware. This used to read
+    # `{RELEVANCE_KIND_RECENCY}` and that was correct for the code it was
+    # written against: every experience number came from
+    # `Experience.relevance(at)`. A query WITH TEXT now reports
+    # bm25 * term_coverage nudged by recency inside [0.9, 1.1], a different
+    # quantity that gets its own label. RECENCY stays legal because a BROWSE
+    # query still falls back to pure decay, and that fallback is why
+    # MATCH_RECENCY alone would be wrong here. What is still forbidden, and is
+    # what this map exists to forbid, is an experience wearing the node path's
+    # plain MATCH or its SIMILARITY.
+    "experience": {RELEVANCE_KIND_RECENCY, RELEVANCE_KIND_MATCH_RECENCY},
     # A node row can legitimately be any of three: bm25 on the keyword path,
     # cosine when semantic recall is on, and the literal 1.0 a text-less browse
-    # or crossref produces. It can never be recency.
+    # produces. It can never be recency, and it can never be MATCH_RECENCY -
+    # nothing on the node path carries an age term.
     "node": {RELEVANCE_KIND_MATCH, RELEVANCE_KIND_SIMILARITY, RELEVANCE_KIND_UNSCORED},
 }
 
@@ -187,17 +199,44 @@ async def test_every_relevance_carries_its_kind(intel):
 
 
 @pytest.mark.asyncio
-async def test_experience_rows_are_labelled_recency_not_match(intel):
-    """The specific claim the plan cares about: an experience's number is
-    recency, and it says so."""
+async def test_experience_rows_on_a_text_query_are_labelled_match_recency(intel):
+    """RENAMED AND INVERTED, deliberately, and the old name is worth keeping in
+    view: `test_experience_rows_are_labelled_recency_not_match`.
+
+    It was right about the code it was written against. The experience number
+    was `Experience.relevance(at)`, pure time-decay, and calling that a match
+    was the defect this file exists to catch. The quantity has since changed:
+    on a query WITH TEXT it is bm25 * term_coverage nudged by recency inside
+    [0.9, 1.1]. Neither of the two existing labels fits it - MATCH would hide
+    the age term, RECENCY would hide the match term - so it carries its own.
+
+    The claim being pinned is unchanged in spirit: the label names the quantity
+    that was actually computed. Only the quantity moved."""
     payload = await intel.context(keywords="sqlite wal checkpoint starvation", limit=10)
     exps = payload.get("experiences") or []
     assert exps, "fixture produced no experiences"
     for e in exps:
-        assert e["relevance_kind"] == RELEVANCE_KIND_RECENCY, (
+        assert e["relevance_kind"] == RELEVANCE_KIND_MATCH_RECENCY, (
             f"experience {e.get('id')} reports kind {e.get('relevance_kind')!r}; "
-            f"its number comes from Experience.relevance(at), which is time-decay"
+            f"this query carried text, so its number is bm25 * coverage with a "
+            f"bounded recency nudge"
         )
+
+
+@pytest.mark.asyncio
+async def test_experience_rows_on_a_browse_fall_back_to_recency(intel):
+    """The other half, and the reason RECENCY is still a legal experience kind.
+
+    Without it the map above could be narrowed to MATCH_RECENCY alone and the
+    browse path would report a decay number under a match-shaped name - the
+    same mirror defect, one query shape away."""
+    from kairn.models.experience import Experience
+
+    browsed = Experience(content="never went through a text recall", type="solution",
+                         decay_rate=0.05)
+    assert browsed.recall_relevance is None
+    assert browsed.reported_relevance_kind() == RELEVANCE_KIND_RECENCY
+    assert browsed.to_response()["relevance_kind"] == RELEVANCE_KIND_RECENCY
 
 
 @pytest.mark.asyncio
@@ -222,17 +261,27 @@ async def test_node_rows_are_labelled_match_or_unscored(intel):
 
 
 @pytest.mark.asyncio
-async def test_crossref_nodes_declare_their_constant_is_not_a_score(intel):
-    """crossref hands every node the literal 1.0 and then sorts nodes and
-    experiences together on that field. The sort is out of scope here; saying
-    the constant is not a ranking is not."""
+async def test_crossref_nodes_now_carry_a_measurement_not_a_constant(intel):
+    """REPLACES `test_crossref_nodes_declare_their_constant_is_not_a_score`.
+
+    That test pinned the honest labelling of a placeholder: crossref handed
+    every node the literal 1.0 because `graph.query` gave it no rank, and
+    saying so was better than letting a caller read 1.0 as a perfect match.
+    The placeholder is gone - crossref queries through `query_ranked` now - so
+    there is a real number to report and UNSCORED would itself be the lie.
+
+    Kept as a test rather than deleted, because the property that mattered is
+    unchanged: a crossref node's label must name what its number IS. Only the
+    number changed."""
     payload = await intel.crossref(problem="sqlite wal checkpoint starvation", limit=10)
     rows = payload if isinstance(payload, list) else payload.get("results", [])
     nodes = [r for r in rows if r.get("source") == "node"]
     assert nodes, "fixture produced no crossref nodes"
     for n in nodes:
-        assert n["relevance"] == 1.0
-        assert n["relevance_kind"] == RELEVANCE_KIND_UNSCORED
+        assert n["relevance_kind"] == RELEVANCE_KIND_MATCH
+        # Not a constant any more. The old defect was that EVERY node read
+        # exactly 1.0; a measurement is bounded strictly below it.
+        assert 0.0 <= n["relevance"] < 1.0, n["relevance"]
 
 
 def test_experience_to_response_carries_the_kind():
@@ -294,13 +343,24 @@ async def test_kn_memories_tool_labels_its_relevance(mcp_client: Client):
     exps = data["experiences"]
     assert exps, "kn_memories returned nothing - this test would be vacuous"
     for e in exps:
-        assert e.get("relevance_kind") == RELEVANCE_KIND_RECENCY, (
+        # This call carries text, so the number is the match-aware composite.
+        # It read RECENCY when kn_memories still reported round(relevance(), 4)
+        # while kn_recall on the same store reported the composite - one
+        # search, two scales. Both surfaces now answer the same question the
+        # same way, and the label is how a caller can see that.
+        assert e.get("relevance_kind") == RELEVANCE_KIND_MATCH_RECENCY, (
             f"kn_memories reports relevance {e.get('relevance')} with kind "
             f"{e.get('relevance_kind')!r}"
         )
 
 
 async def test_kn_memories_resource_labels_its_relevance(mcp_client: Client):
+    """Still RECENCY, and that is the point: this resource is a BROWSE.
+
+    It passes no text, so no match question is asked of any row and the
+    fallback is the honest answer. Kept next to the two text-query tests above
+    so the pair shows the label tracking the query shape rather than the
+    surface."""
     res = await mcp_client.read_resource("kn://memories")
     data = json.loads(res[0].text)
     exps = data["experiences"]
@@ -346,7 +406,10 @@ def test_cli_memories_labels_its_relevance(tmp_path):
     exps = data.get("experiences") or []
     assert exps, f"cli memories returned nothing - test would be vacuous: {r.stdout[:200]}"
     for e in exps:
-        assert e.get("relevance_kind") == RELEVANCE_KIND_RECENCY
+        # Text query, so the composite - the same change as the MCP tool above,
+        # and the two are asserted separately because they were two separate
+        # sites reporting two separate quantities.
+        assert e.get("relevance_kind") == RELEVANCE_KIND_MATCH_RECENCY
 
 
 def test_wrong_kinds_can_actually_fail():

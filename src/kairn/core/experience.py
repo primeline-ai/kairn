@@ -12,7 +12,14 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from kairn.core.fts import _STOP_WORDS, fts_keywords, to_fts_query
+from kairn.core.fts import (
+    _STOP_WORDS,
+    blend_match_and_recency,
+    bm25_match,
+    fts_keywords,
+    term_coverage,
+    to_fts_query,
+)
 from kairn.events.bus import EventBus
 from kairn.events.types import EventType
 from kairn.models.experience import VALID_CONFIDENCES, VALID_TYPES, Experience
@@ -275,6 +282,40 @@ class ExperienceEngine:
         self.store = store
         self.event_bus = event_bus
 
+
+    @staticmethod
+    def _match_strength(data: dict, terms: list[str]) -> float:
+        """How well this row answered the question: bm25 scaled by coverage.
+
+        THE ONE MATCH QUANTITY, in the sense that all three consumers derive
+        from it: `min_match` floors it RAW, while the sort key and the reported
+        number are it nudged by recency within [0.9, 1.1]. They cannot disagree
+        about what "match" MEANS, which is the defect this replaced; they can
+        differ by up to 10% in VALUE, which is documented at `min_match` and
+        pinned by a test. Saying they are one number was too strong and an
+        external review caught it.
+
+        Gating on raw bm25 while REPORTING bm25 * coverage let a 1-of-4
+        partial match clear a floor it was then reported below (measured: gate
+        0.578 against a reported 0.159 at coverage 0.25).
+
+        Unrounded on purpose. The 4-decimal round in `bm25_to_relevance` is
+        the WIRE contract, not a threshold contract - on a small store it
+        collapses real matches to 0.0, at which point a sort by that value is
+        insertion order wearing a ranking's name.
+
+        Written once and called from both `search` and `search_bitemporal`,
+        because a fix applied to one of two gates looks exactly like a fix
+        while the other keeps leaking (Kairn `d5272a91`).
+
+        Assumes the backend surfaces `rank` for a MATCH query; `storage.base`
+        does not require it, and a backend that stopped would score every row
+        1.0 * coverage here. Not guarded - reported instead.
+        """
+        return bm25_match(data.get("rank")) * term_coverage(
+            terms, data.get("content"), data.get("context")
+        )
+
     async def save(
         self,
         *,
@@ -378,6 +419,7 @@ class ExperienceEngine:
         text: str | None = None,
         exp_type: str | None = None,
         min_relevance: float = 0.0,
+        min_match: float = 0.0,
         limit: int = 10,
         offset: int = 0,
     ) -> list[Experience]:
@@ -386,7 +428,26 @@ class ExperienceEngine:
         Args:
             text: Text to search for (FTS5)
             exp_type: Filter by experience type
-            min_relevance: Minimum relevance threshold
+            min_relevance: Minimum relevance threshold (DECAY, not match)
+            min_match: Abstention floor on the UNBLENDED match strength
+                (`_match_strength`: bm25 saturated, scaled by term coverage).
+                0.0 (default) is off. A browse query has no match question, so
+                the floor does not apply to it.
+
+                THE FLOOR AND THE REPORTED NUMBER ARE NOT THE SAME QUANTITY,
+                and an earlier version of this line claimed they were. The sort
+                key and the reported relevance are that strength nudged by
+                recency inside [0.9, 1.1] (`blend_match_and_recency`), so an
+                OLD row can clear the floor on strength and still be reported
+                just under it: strength 0.20 against min_match 0.19 at decay
+                0.0 passes the gate and reports 0.18. That is bounded at 10%
+                and deliberate - flooring the blend instead would make the
+                abstention decision depend on age, which is the
+                lexicographic-on-a-decay-bucket gate this file exists to
+                remove (Kairn `cec86cb9`). It is a documented asymmetry, not a
+                guarantee, and
+                `test_the_gate_can_pass_a_row_the_report_shows_below_the_floor`
+                pins the direction so nobody re-derives it as a bug.
             limit: Maximum number of results
             offset: Offset for pagination
 
@@ -407,10 +468,12 @@ class ExperienceEngine:
         fts_text: str | None
         if text is not None:
             fts_text = to_fts_query(text)
+            query_terms = fts_keywords(text)
             if fts_text is None:
                 return []
         else:
             fts_text = None
+            query_terms = []
 
         # Query from store (the FTS path returns rows in BM25 match order)
         results = await self.store.query_experiences(
@@ -425,22 +488,64 @@ class ExperienceEngine:
         scored: list[tuple[Experience, float]] = []
         for data in results:
             exp = Experience(**data)
-            current_relevance = exp.relevance(at=now)
+            decay_relevance = exp.relevance(at=now)
+            # A text query carries match strength; pure decay does not. Gating
+            # on decay alone let a fresh experience score ~0.98 against ANY
+            # query that retrieved it at all, so min_relevance was decorative
+            # here exactly as it was on the node path before the bm25 fix.
+            # `relevance()` itself stays pure decay - the composition happens
+            # in the RECALL, not in the model.
+            # None means NO match question was asked of this row. That is a
+            # state this function KNOWS (`fts_text is None`); re-deriving it
+            # from `data.get("rank")` meant a backend that stopped surfacing
+            # the rank column would turn every row unmeasurable and the floor
+            # into a silent no-op.
+            #
+            # NOT A LIVE GUARD, and measured as such: replacing this `None`
+            # with 1.0 leaves all 26 floor tests green, because `bm25_match`
+            # is bounded strictly below 1.0 for any finite rank and the floor
+            # is capped at 1.0, so `1.0 < min_match` is false for every legal
+            # value. It is kept because it is the honest TYPE for "no match
+            # question was asked", and it is what makes the gate below
+            # readable. Do not cite it as protection.
+            strength: float | None = None
+            sort_value = decay_relevance
+            if fts_text is not None:
+                strength = self._match_strength(data, query_terms)
+                sort_value = blend_match_and_recency(
+                    match=strength, decay=decay_relevance
+                )
+                # The REPORTED score is the sort key. A number a caller reads
+                # must not contradict the order it arrives in - the same
+                # defect this file already fixed one level down, where the
+                # reported relevance was pure decay.
+                exp.recall_relevance = round(sort_value, 6)
 
             # Apply min_relevance filter
-            if current_relevance >= min_relevance:
-                scored.append((exp, current_relevance))
+            # `min_relevance` KEEPS ITS MEANING - a decay threshold. Gating it
+            # on the composite instead was tried and reverted: bm25 magnitude
+            # scales with corpus size, so on a small store every score collapses
+            # and any positive floor filters everything. Three existing tests
+            # caught exactly that, and they were right.
+            if decay_relevance < min_relevance:
+                continue
+            # Abstention is opt-in and orthogonal, so the default path is
+            # byte-identical to before.
+            # A row with no match question asked of it is INAPPLICABLE to
+            # the floor, not failed by it - see TestTopiclessBrowseAndTheFloor
+            # for the reading this was chosen over, and why it is opt-in.
+            if min_match and strength is not None and strength < min_match:
+                continue
+            scored.append((exp, sort_value))
 
-        if fts_text is not None:
-            # Match strength stays primary: quantize relevance into coarse
-            # buckets and stable-sort by bucket, so the store's BM25 order
-            # survives within each bucket. Sorting by exact relevance would
-            # collapse to pure recency (microsecond created_at differences
-            # make every value unique) and discard match strength.
-            scored.sort(key=lambda pair: relevance_bucket(pair[1]), reverse=True)
-        else:
-            # No match signal without text: exact relevance is the order.
-            scored.sort(key=lambda pair: pair[1], reverse=True)
+        # ONE compensatory score, both branches. The decay BUCKET is gone:
+        # quantizing recency and stable-sorting inside the bucket is a
+        # lexicographic sort that lets a fresh weak match outrank an old
+        # strong one, which is the mechanism Kairn `cec86cb9` names behind
+        # "the injector keeps showing me recent notes I do not need". With a
+        # text query `pair[1]` is the blend; without one it is pure decay,
+        # because there is no match strength to compose.
+        scored.sort(key=lambda pair: pair[1], reverse=True)
 
         experiences = [exp for exp, _ in scored]
 
@@ -453,6 +558,7 @@ class ExperienceEngine:
         text: str | None = None,
         exp_type: str | None = None,
         min_relevance: float = 0.0,
+        min_match: float = 0.0,
         limit: int = 10,
         as_of: str | None = None,
     ) -> list[Experience]:
@@ -501,10 +607,12 @@ class ExperienceEngine:
         fts_text: str | None
         if text is not None:
             fts_text = to_fts_query(text)
+            query_terms = fts_keywords(text)
             if fts_text is None:
                 return []
         else:
             fts_text = None
+            query_terms = []
 
         results = await self.store.query_experiences(
             text=fts_text, exp_type=exp_type, limit=100000, offset=0
@@ -521,14 +629,46 @@ class ExperienceEngine:
                 vf_day = normalize_date_prefix(exp.valid_from)
                 if vf_day is not None and vf_day > as_of_day:
                     continue
-            current_relevance = exp.relevance(at=now)
-            if current_relevance >= min_relevance:
-                scored.append((exp, current_relevance))
+            decay_relevance = exp.relevance(at=now)
+            # Same composition as search() - this is the SECOND gate on the
+            # same defect, and fixing only the first one would look exactly
+            # like a fix while bi-temporal recall kept leaking.
+            # None means NO match question was asked of this row. That is a
+            # state this function KNOWS (`fts_text is None`); re-deriving it
+            # from `data.get("rank")` meant a backend that stopped surfacing
+            # the rank column would turn every row unmeasurable and the floor
+            # into a silent no-op.
+            #
+            # NOT A LIVE GUARD, and measured as such: replacing this `None`
+            # with 1.0 leaves all 26 floor tests green, because `bm25_match`
+            # is bounded strictly below 1.0 for any finite rank and the floor
+            # is capped at 1.0, so `1.0 < min_match` is false for every legal
+            # value. It is kept because it is the honest TYPE for "no match
+            # question was asked", and it is what makes the gate below
+            # readable. Do not cite it as protection.
+            strength: float | None = None
+            sort_value = decay_relevance
+            if fts_text is not None:
+                strength = self._match_strength(data, query_terms)
+                sort_value = blend_match_and_recency(
+                    match=strength, decay=decay_relevance
+                )
+                # The REPORTED score is the sort key. A number a caller reads
+                # must not contradict the order it arrives in - the same
+                # defect this file already fixed one level down, where the
+                # reported relevance was pure decay.
+                exp.recall_relevance = round(sort_value, 6)
+            if decay_relevance < min_relevance:
+                continue
+            # A row with no match question asked of it is INAPPLICABLE to
+            # the floor, not failed by it - see TestTopiclessBrowseAndTheFloor
+            # for the reading this was chosen over, and why it is opt-in.
+            if min_match and strength is not None and strength < min_match:
+                continue
+            scored.append((exp, sort_value))
 
-        if fts_text is not None:
-            scored.sort(key=lambda pair: relevance_bucket(pair[1]), reverse=True)
-        else:
-            scored.sort(key=lambda pair: pair[1], reverse=True)
+        # Same single key as search() - see the comment there.
+        scored.sort(key=lambda pair: pair[1], reverse=True)
 
         ordered = [exp for exp, _ in scored]
         # Session/entity diversification is an operator-toggleable kill-switch

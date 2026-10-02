@@ -47,18 +47,45 @@ async def test_recall_returns_both_sources_at_a_small_limit(engine):
     )
 
 
+# Each row answers a DIFFERENT number of the query's terms, so the ranking has
+# a defined order instead of twenty near-ties.
+#
+# WHY THIS MATTERS HERE, measured rather than assumed. The fixture used to give
+# every row the same three query terms, which was fine while experiences were
+# ordered by pure time-decay: the rows were created milliseconds apart, so
+# decay ordered them and it ordered them the same way on every call. The
+# experience score is now bm25 * term_coverage with a bounded recency nudge, so
+# twenty identically-matching rows differ only in the nudge - and the nudge is
+# recomputed from `datetime.now()` on each call. Two calls milliseconds apart
+# then legitimately disagree about which near-tie leads, and this test compares
+# exactly that: one call at limit=50 against another at limit=6. The node half
+# kept passing throughout, because nodes carry no age term.
+#
+# That is Kairn `ec5b2241`: a compensatory ranking has no stable total order
+# over near-ties across two instants. The property this test exists for -
+# allocation preserves each group's internal rank - is unaffected, so the
+# fixture is what changes, not the assertion.
+_TERMS = ["wal", "checkpoint", "starvation", "reader", "commit", "throttle"]
+
+
+def _graded(i: int, kind: str) -> str:
+    """Content answering `i % 4 + 2` of the query's six terms, so scores differ."""
+    return " ".join(_TERMS[: (i % 4) + 2]) + f" {kind} {i}"
+
+
 @pytest.mark.asyncio
 async def test_recall_preserves_rank_inside_each_group(engine):
     """The commit claimed "rank inside each group is preserved exactly" and
     nothing tested it. A reviewer applied `reversed(nodes_out)` and the whole
     679-test suite still passed."""
     for i in range(10):
-        await engine.learn(content=f"wal checkpoint starvation note {i}",
+        await engine.learn(content=_graded(i, "note"),
                            type="gotcha", confidence="high")
-        await engine.learn(content=f"wal checkpoint starvation trace {i}",
+        await engine.learn(content=_graded(i, "trace"),
                            type="gotcha", confidence="low")
-    big = await engine.recall(topic="wal checkpoint starvation", limit=50)
-    small = await engine.recall(topic="wal checkpoint starvation", limit=6)
+    topic = " ".join(_TERMS)
+    big = await engine.recall(topic=topic, limit=50)
+    small = await engine.recall(topic=topic, limit=6)
     for src in ("node", "experience"):
         full = [r["id"] for r in big if r["source"] == src]
         got = [r["id"] for r in small if r["source"] == src]

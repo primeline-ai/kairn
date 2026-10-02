@@ -48,6 +48,8 @@ class Config:
     embedding_host: str = "http://localhost:11434"
     semantic_recall_floor: float = 0.5
     semantic_recall_top_n: int = 30
+    # Abstention floor for the experience path (0.0 = off, unchanged recall).
+    experience_min_match: float = 0.0
 
     # Decay half-lives (days). DEPRECATED as a source: the live decay path is
     # core/experience.py:HALF_LIVES (decay_rate_for_type below delegates to it).
@@ -87,7 +89,7 @@ class Config:
         # Load YAML config if exists
         config_file = config.workspace_path / "config.yaml"
         if config_file.exists():
-            with open(config_file) as f:
+            with open(config_file, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
             for key, value in data.items():
                 if hasattr(config, key):
@@ -152,6 +154,7 @@ class Config:
             "embedding_host": self.embedding_host,
             "semantic_recall_floor": self.semantic_recall_floor,
             "semantic_recall_top_n": self.semantic_recall_top_n,
+            "experience_min_match": self.experience_min_match,
         }
-        with open(config_file, "w") as f:
+        with open(config_file, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False)

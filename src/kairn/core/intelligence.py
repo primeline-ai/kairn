@@ -5,6 +5,8 @@ Bridges graph, experience, and router engines into unified knowledge operations.
 
 from __future__ import annotations
 
+import re
+
 import asyncio
 import logging
 import re
@@ -16,7 +18,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from kairn.core.experience import ExperienceEngine
-from kairn.core.fts import _to_fts_query  # used here + re-exported for back-compat
+from kairn.core.fts import (  # used here + re-exported for back-compat
+    BM25_RELEVANCE_MIDPOINT,
+    _to_fts_query,
+    bm25_match,
+    bm25_to_relevance,
+    term_coverage,
+)
 from kairn.core.graph import GraphEngine
 from kairn.core.ideas import IdeaEngine
 from kairn.core.memory import ProjectMemory
@@ -47,25 +55,122 @@ logger = logging.getLogger(__name__)
 _CANDIDATES_LIMIT = 5
 _CANDIDATE_SNIPPET_CHARS = 160
 
-# bm25 score at which node relevance = 0.5. Larger => the same bm25 match maps
-# to a lower relevance, so weak keyword overlaps fall under a strict
-# min_relevance floor while strong multi-term matches clear it.
-_BM25_RELEVANCE_MIDPOINT = 5.0
+# Both live in core.fts: the experience path needs the same transform, and
+# `intelligence` imports `experience`, so the shared helper cannot live here.
+_BM25_RELEVANCE_MIDPOINT = BM25_RELEVANCE_MIDPOINT
+_bm25_to_relevance = bm25_to_relevance
 
 
-def _bm25_to_relevance(rank: float | None) -> float:
-    """Map an FTS5 bm25 `rank` to a bounded (0, 1] relevance.
 
-    SQLite FTS5 exposes bm25 as a negative score where a more-negative value
-    means a stronger match. A saturating transform (score / (score + K))
-    preserves the raw bm25 ordering while yielding an absolute-ish relevance
-    the min_relevance gate can act on. `rank is None` (a non-text browse query
-    with no MATCH) has no match strength to report, so it stays 1.0.
+# Reporting resolution for a match-derived relevance. SIX decimals, not four.
+# MEASURED on this branch: a one- or two-document store puts the FTS5 bm25
+# rank at ~-4e-06 (there is no corpus for IDF to work with), so the saturating
+# transform yields ~1.1e-06 and `round(match, 4)` is exactly 0.0 - including
+# for a verbatim 4-of-4 term match. `round(match, 6)` is 1e-06, and the whole
+# effect disappears at three documents (match 0.29). Four decimals therefore
+# fabricated a zero in exactly the case a fresh workspace is in.
+#
+# Two consumers were misled by that zero: anything filtering `relevance > 0`
+# (the review's own example), and `min_relevance` itself, which is compared
+# against this same ROUNDED value in `_keyword_node_recall` - so any positive
+# `min_relevance` emptied the node side of a new workspace.
+#
+# What more decimals do NOT fix, and no rounding can: bm25 magnitude scales
+# with corpus size, so the same query/document pair reports 1e-06 here and
+# 0.92 on a 500-document store. A consumer holding an ABSOLUTE threshold is
+# still misled. Fixing that needs a corpus-independent quantity (term coverage
+# is one) reported alongside, which is a wire-schema change, not a rounding.
+#
+# The experience path already reports at 6 decimals (`ExperienceEngine.search`
+# stores `round(sort_value, 6)`), so matching it here also puts both kinds on
+# ONE resolution - which `crossref` now depends on, because it sorts them
+# against each other.
+_RELEVANCE_DECIMALS = 6
+
+# How many candidates to pull from the store before reranking by the score we
+# actually report. The store truncates in RAW bm25 order (`ORDER BY rank
+# LIMIT ?`), so a rerank that only ever sees `limit` rows cannot recover a
+# document the raw order already dropped - it can only shuffle the survivors.
+# MEASURED on a 26-node store, query "postgres connection pool exhaustion",
+# one document answering all four terms against five one-word notes holding
+# only the rarest term:
+#
+#     limit=3   the 4-of-4 document is ABSENT, three one-word notes fill it
+#     limit=5   still absent, five one-word notes fill it
+#     limit=10  it leads, at 0.101312 against 0.061231
+#
+# so at a realistic `limit` the rerank was decorative. `_semantic_node_recall`
+# already had this right with `semantic_top_n` (default 30); this is the same
+# over-fetch for the keyword path. The floor keeps a small `limit` from
+# reranking a pool too shallow to contain the answer.
+_RERANK_POOL_FACTOR = 4
+_RERANK_POOL_MIN = 30
+
+
+def _rerank_pool(limit: int) -> int:
+    """Candidate count to fetch before reranking down to `limit`."""
+    return max(_RERANK_POOL_MIN, limit * _RERANK_POOL_FACTOR)
+
+
+def _node_relevance(
+    rank: float | None,
+    terms: list[str],
+    name: str | None,
+    description: str | None,
+) -> float:
+    """The ONE reported-and-ordering relevance for a node on a text query.
+
+    bm25 match strength scaled by how much of the question the node actually
+    answers. Written once and shared by `_keyword_node_recall` and `crossref`
+    because those two were the N-1-of-N pair: recall measured its nodes while
+    crossref labelled every node with the constant 1.0, and then sorted the
+    two kinds against each other. A placeholder always beats a measurement,
+    which is how a 4-of-4 experience lost its slot to a 1-of-4 node.
+
+    A browse query (no terms) has no match signal to report, so it keeps the
+    1.0 that `bm25_to_relevance` documents for `rank is None`.
     """
-    if rank is None:
-        return 1.0
-    score = max(0.0, -float(rank))
-    return round(score / (score + _BM25_RELEVANCE_MIDPOINT), 4)
+    if not terms:
+        return bm25_to_relevance(rank)
+    return round(
+        bm25_match(rank) * term_coverage(terms, name, description),
+        _RELEVANCE_DECIMALS,
+    )
+
+
+def _reported_relevance(exp: Any, now: datetime) -> float:
+    """The relevance a caller sees for an experience.
+
+    Prefers the match-aware value the recall computed (`recall_relevance`,
+    set by ExperienceEngine.search when the query had text). Falls back to
+    pure decay for browse queries and for any path that did not go through
+    that gate - so this is additive, never a behaviour change on the no-text
+    path. Reporting raw decay for a text query printed ~0.98 against alien
+    queries, which is the same fake-relevance defect the node path had.
+    """
+    # DELEGATES. The rule lives on the model (Experience.reported_relevance)
+    # because the model is the one module every reporting surface can import,
+    # and because a second copy here is what let models/experience.py go on
+    # emitting pure decay after the wire surfaces were fixed.
+    return exp.reported_relevance(at=now)
+
+
+def _fts_terms(fts_query: str | None) -> list[str]:
+    """Recover the individual terms from a `to_fts_query` output.
+
+    `to_fts_query` emits `"a" OR "b" OR "c"`, so the quoted spans are exactly
+    the searchable terms. Returns [] for a browse query (None) or a malformed
+    string, which callers treat as "no coverage signal available".
+    """
+    if not fts_query:
+        return []
+    return re.findall(r'"([^"]+)"', fts_query)
+
+
+# Moved to `core.fts` so the EXPERIENCE path can use it too (it could not
+# import this module - `intelligence` imports `experience`). The private name
+# stays as the alias every call site here already uses.
+_term_coverage = term_coverage
 
 
 def _fold_diacritics(text: str) -> str:
@@ -198,12 +303,15 @@ def _allocate_across_sources(
 ) -> list[dict[str, Any]]:
     """Take one row from each source in turn, nodes first, up to `limit`.
 
-    REFUSING TO MERGE-SORT IS ONLY HALF THE JOB. Node bm25 match-strength and
-    experience time-decay are different scales, so the union is deliberately not
-    sorted on `relevance` - but the other half was a plain `results[:limit]`
-    with nodes appended first, which let the node list eat the whole budget.
-    Measured on 12 real queries: limit=3 -> 36 nodes / 0 experiences,
-    limit=6 -> 72 / 0; experiences only appeared at limit=20.
+    THE BUDGET IS THE POINT, NOT THE ORDER. It was written when node
+    match-strength and experience time-decay were different scales and the
+    union therefore could not be sorted at all; both now carry bm25 match times
+    term coverage, and `crossref` does sort them before calling this. The
+    allocation is still needed, because sorting fairly does not make the budget
+    fair: the other half of the defect was a plain `results[:limit]` with nodes
+    appended first, which let the node list eat the whole budget. Measured on
+    12 real queries: limit=3 -> 36 nodes / 0 experiences, limit=6 -> 72 / 0;
+    experiences only appeared at limit=20.
 
     Rank INSIDE each group is preserved exactly - this only interleaves two
     already-ordered lists. One empty group still fills the whole budget.
@@ -213,6 +321,14 @@ def _allocate_across_sources(
     "nodes first"; and a caller who wanted the `limit` best NODES now gets about
     half that many. This is an allocation POLICY, not a pure correctness fix,
     and it is stated here rather than implied.
+
+    ONE MORE CONSEQUENCE, now that the union arrives sorted: slot 0 is a node
+    whenever any node matched, so "the best row is first" does NOT hold at
+    `crossref` even though the rows are ranked. That trade was taken
+    deliberately - losing an answer to truncation is a real harm, not leading
+    with the top row is a cosmetic one - and it is pinned in
+    `test_the_best_match_leads_its_own_group` rather than left to be
+    rediscovered.
 
     Rows whose `source` is neither "node" nor "experience" are appended after
     both groups rather than dropped - the previous slice would have kept them.
@@ -246,6 +362,7 @@ class IntelligenceLayer:
         embedder_model: str | None = None,
         semantic_recall: bool = False,
         semantic_floor: float = 0.5,
+        experience_min_match: float = 0.0,
         semantic_top_n: int = 30,
     ) -> None:
         self.store = store
@@ -262,6 +379,10 @@ class IntelligenceLayer:
         self.embedder_model = embedder_model
         self.semantic_recall = semantic_recall
         self.semantic_floor = semantic_floor
+        # Abstention floor for the EXPERIENCE path. Default 0.0 keeps recall
+        # byte-identical; the node path can abstain while experiences still
+        # flood the result set, which is what made the semantic win invisible.
+        self.experience_min_match = experience_min_match
         self.semantic_top_n = semantic_top_n
 
     async def _log_node_access(
@@ -496,17 +617,20 @@ class IntelligenceLayer:
         """Keyword node path: FTS5 bm25 relevance, min_relevance gate. This is
         the default recall for nodes (semantic_recall OFF)."""
         if fts_query:
-            ranked = await self.graph.query_ranked(text=fts_query, limit=limit)
+            ranked = await self.graph.query_ranked(
+                text=fts_query, limit=_rerank_pool(limit)
+            )
         else:
             ranked = await self.graph.query_ranked(limit=limit)
         terms = _fts_terms(fts_query)
         out: list[dict[str, Any]] = []
         for node, rank in ranked:
-            relevance = _bm25_to_relevance(rank)
-            if terms:
-                relevance = round(
-                    relevance * _term_coverage(terms, node.name, node.description), 4
-                )
+            # The same computation this used to inline, moved into one helper
+            # because `crossref` needs it too and had a constant 1.0 instead.
+            # It also drops the intermediate 4-decimal round: on a small store
+            # that round collapses every match to 0.0, at which point a sort by
+            # the value is insertion order wearing a ranking's name.
+            relevance = _node_relevance(rank, terms, node.name, node.description)
             if relevance < min_relevance:
                 continue
             # A text-less query has no rank, and _bm25_to_relevance(None)
@@ -526,7 +650,17 @@ class IntelligenceLayer:
                     ),
                 )
             )
-        return out
+        # The reported score IS the order. `query_ranked` hands back raw bm25
+        # order, but the score reported here is bm25 times term coverage, and
+        # those two orders disagree exactly when coverage does its job: a
+        # one-word note holding only the rarest query term scores 0.387 on raw
+        # bm25 against 0.175 for the document that answers all four terms, and
+        # arrived FIRST while reporting the lower number. Found by a mutation
+        # control - deleting `term_coverage` from the node score changed
+        # nothing any test could see, because nothing ordered by it.
+        out.sort(key=lambda r: r["relevance"], reverse=True)
+        # Truncate AFTER the rerank, never before - see `_rerank_pool`.
+        return out[:limit]
 
     async def _semantic_node_recall(
         self, topic: str, fts_query: str, limit: int, min_relevance: float = 0.0
@@ -629,6 +763,21 @@ class IntelligenceLayer:
         """
         results: list[dict[str, Any]] = []
         fts_query = _to_fts_query(topic) if topic else None
+        # THREE STATES, NOT TWO. `_to_fts_query` returns None both when NO
+        # topic was given (a deliberate browse) and when a topic was given
+        # whose every word is a stop word (a question with nothing searchable
+        # in it). The node path reads None as "browse", so the second case
+        # answered an unanswerable question with the most recent nodes at
+        # relevance 1.0 - `bm25_to_relevance(None)` is a REPORTING contract
+        # ("no match to report") being read as a perfect score, one file over
+        # from where the same defect was removed from the experience gate.
+        # Measured at the SHIPPED DEFAULT, so no floor could have caught it:
+        # recall("is it ok") returned 0 experiences and 5 unrelated nodes at
+        # 1.0. The experience half took a different fix (raw text, because
+        # ExperienceEngine shapes text itself); the node path genuinely needs
+        # the pre-shaped query, since GraphEngine.query_ranked forwards it
+        # straight to `nodes_fts MATCH ?`. So the discrimination belongs here.
+        asked_but_unsearchable = bool(topic) and not fts_query
 
         # Node path. Default = keyword (honest bm25 relevance + min_relevance
         # gate). With the opt-in semantic_recall flag on AND a query present,
@@ -638,6 +787,10 @@ class IntelligenceLayer:
             node_results = await self._semantic_node_recall(
                 topic, fts_query, limit, min_relevance
             )
+        elif asked_but_unsearchable:
+            # A question was asked and nothing searchable survived it. The
+            # honest answer is nothing, not the newest rows (Kairn 8a3a11af).
+            node_results = []
         else:
             node_results = await self._keyword_node_recall(
                 fts_query=fts_query, limit=limit, min_relevance=min_relevance
@@ -650,8 +803,21 @@ class IntelligenceLayer:
 
         # Search experiences (decay-aware)
         experiences = await self.experience.search(
-            text=fts_query,
+            # RAW TEXT, not the shaped query. `_to_fts_query` maps BOTH "no
+            # topic was given" and "a topic whose words are all stop words"
+            # onto None, and None is the engine's BROWSE signal - so an
+            # unanswerable question was answered with the most recent rows.
+            # Measured: `recall("is it ok")` returned 5 unrelated experiences,
+            # AT THE DEFAULT FLOOR, so no abstention gate could ever have
+            # closed it (Kairn `00f674bd` reproduced it at 0.65 and read the
+            # cause one layer too low). `ExperienceEngine.search` shapes raw
+            # text itself and returns [] when no keyword survives, and
+            # re-shaping an already-shaped query is idempotent by its own
+            # contract, so passing the raw text is both safe and the only
+            # place the two meanings can be told apart.
+            text=topic,
             min_relevance=min_relevance,
+            min_match=self.experience_min_match,
             limit=limit,
         )
 
@@ -665,18 +831,22 @@ class IntelligenceLayer:
                     "namespace": exp.namespace,
                     "content": exp.content,
                     "confidence": exp.confidence,
-                    "relevance": round(exp.relevance(at=now), 4),
-                    "relevance_kind": RELEVANCE_KIND_RECENCY,
+                    "relevance": _reported_relevance(exp, now),
+                    "relevance_kind": exp.reported_relevance_kind(),
                 }
             )
 
         # Nodes (curated, permanent) lead, then experiences (decaying). Each
         # group is already ranked internally - nodes by bm25 match strength
-        # (query_ranked order), experiences by the experience engine's search
-        # order. We deliberately do NOT merge-sort the union by a single
-        # "relevance" float: node bm25 match-strength and experience time-decay
-        # are different scales, and sorting them together buries curated nodes
-        # under fresh (high-decay-relevance) experiences.
+        # times term coverage, experiences by the experience engine's search
+        # order. We deliberately do NOT merge-sort the union here. The original
+        # reason was that the two were different SCALES - node match strength
+        # against experience time-decay - and that reason is now gone: both
+        # sides carry bm25 match times coverage. What remains is the reason
+        # that outlives it. `recall` is the surface that must not bury curated
+        # nodes under fresh experiences, so the two groups keep their own order
+        # and the budget is split between them. `crossref` DOES sort the union,
+        # and may, because there nothing has to lead.
         #
         # BUT REFUSING TO MERGE-SORT IS ONLY HALF THE JOB, and the other half
         # was a plain `results[:limit]`. Nodes are appended first, so at the
@@ -738,12 +908,23 @@ class IntelligenceLayer:
         fts_query = _to_fts_query(problem)
         results: list[dict[str, Any]] = []
 
-        # Search nodes for solutions/patterns
+        # Search nodes for solutions/patterns. `query_ranked` is the same
+        # store query as `query` with the bm25 rank additionally exposed, so
+        # the row set is unchanged - what changes is that the node now carries
+        # a MEASUREMENT instead of the constant 1.0 it used to be labelled
+        # with. The sort below compares these against experience scores, and a
+        # placeholder in a comparison is not a tie-break, it is a guaranteed
+        # win: three nodes sharing one query term out-ranked a verbatim 4-of-4
+        # experience and the `[:limit]` truncation then dropped it (Kairn
+        # `00f674bd`). Both sides are now bm25 match times term coverage.
+        terms = _fts_terms(fts_query)
         if fts_query:
-            nodes = await self.graph.query(text=fts_query, limit=limit)
+            ranked = await self.graph.query_ranked(
+                text=fts_query, limit=_rerank_pool(limit)
+            )
         else:
-            nodes = []
-        for node in nodes:
+            ranked = []
+        for node, rank in ranked:
             results.append(
                 {
                     "source": "node",
@@ -753,14 +934,19 @@ class IntelligenceLayer:
                     "type": node.type,
                     "namespace": node.namespace,
                     "description": node.description,
-                    # Not a ranking. `graph.query` returns nodes in its own
-                    # order and this surface has no score to report, so it
-                    # fills in a constant. Labelled UNSCORED so a caller does
-                    # not read 1.0 as a perfect match - and so the sort below,
-                    # which compares this constant against experience recency,
-                    # is visible rather than implied.
-                    "relevance": 1.0,
-                    "relevance_kind": RELEVANCE_KIND_UNSCORED,
+                    # This used to be the constant 1.0, labelled UNSCORED
+                    # because `graph.query` returned nodes in its own order and
+                    # there was no score to report. The query above is now
+                    # `query_ranked`, so there IS one: bm25 match strength
+                    # scaled by term coverage, the same quantity `recall` uses.
+                    # The placeholder was not a tie-break but a guaranteed win
+                    # - three nodes sharing one query term out-ranked a
+                    # verbatim 4-of-4 experience and the truncation dropped it
+                    # (Kairn `00f674bd`). A measurement is what removes that.
+                    "relevance": _node_relevance(
+                        rank, terms, node.name, node.description
+                    ),
+                    "relevance_kind": RELEVANCE_KIND_MATCH,
                 }
             )
 
@@ -768,8 +954,21 @@ class IntelligenceLayer:
 
         # Search experiences for solutions
         experiences = await self.experience.search(
-            text=fts_query,
+            # RAW TEXT, not the shaped query. `_to_fts_query` maps BOTH "no
+            # topic was given" and "a topic whose words are all stop words"
+            # onto None, and None is the engine's BROWSE signal - so an
+            # unanswerable question was answered with the most recent rows.
+            # Measured: `recall("is it ok")` returned 5 unrelated experiences,
+            # AT THE DEFAULT FLOOR, so no abstention gate could ever have
+            # closed it (Kairn `00f674bd` reproduced it at 0.65 and read the
+            # cause one layer too low). `ExperienceEngine.search` shapes raw
+            # text itself and returns [] when no keyword survives, and
+            # re-shaping an already-shaped query is idempotent by its own
+            # contract, so passing the raw text is both safe and the only
+            # place the two meanings can be told apart.
+            text=problem,
             min_relevance=0.1,
+            min_match=self.experience_min_match,
             limit=limit,
         )
 
@@ -784,32 +983,34 @@ class IntelligenceLayer:
                     "namespace": exp.namespace,
                     "content": exp.content,
                     "confidence": exp.confidence,
-                    "relevance": round(exp.relevance(at=now), 4),
-                    "relevance_kind": RELEVANCE_KIND_RECENCY,
+                    "relevance": _reported_relevance(exp, now),
+                    "relevance_kind": exp.reported_relevance_kind(),
                 }
             )
 
-        # ORDER-PRESERVING, and that is provable rather than hoped for. This
-        # used to sort every row on `relevance` alone - comparing a node's
-        # literal 1.0 against an experience's decay, two numbers that share a
-        # range and nothing else. It is replaced by an explicit two-level key
-        # that reproduces the old ORDER exactly:
-        #   nodes are all 1.0, so no experience could ever outrank one; the
-        #   only tie is a brand-new experience whose decay is also exactly 1.0,
-        #   and Python's sort is stable, so that tie already resolved in
-        #   insertion order - nodes are appended first, above.
-        # Same output, without the cross-scale comparison that made the number
-        # look meaningful. Changing the order is a behaviour change and belongs
-        # in the phase that owns ranking, not in a labelling change.
-        results.sort(
-            key=lambda r: (0 if r["source"] == "node" else 1, -r["relevance"]),
-        )
+        # A SINGLE SORT ON `relevance` IS LEGITIMATE NOW, AND ONLY NOW. It was
+        # replaced by an explicit nodes-then-experiences key precisely because
+        # a node carried the literal 1.0 and an experience carried decay: two
+        # numbers sharing a range and nothing else, where the placeholder
+        # always won. Both sides now carry bm25 match strength times term
+        # coverage, at one resolution (`_RELEVANCE_DECIMALS`); experiences
+        # additionally carry the bounded +-10% recency nudge, which cannot
+        # promote a weak fresh hit over a strong old one. The condition that
+        # made the two-level key necessary is gone, so the honest key is the
+        # measurement.
+        results.sort(key=lambda r: r["relevance"], reverse=True)
         # SAME DEFECT AS recall(), one function away - measured side by side on
         # one store with 10 matching nodes and 10 matching experiences at
         # limit=6:  recall -> 3 nodes / 3 experiences,  crossref -> 6 / 0.
+        # Sorting fairly does not make the budget fair; that needs allocating.
         results = _allocate_across_sources(results, limit)
 
-        # Credit only what the caller received - see the note in recall().
+        # Credit only what the caller received - see the note in recall(). This
+        # replaces a node-only version of the same block that used to sit after
+        # the truncation: the node pool is over-fetched for the rerank
+        # (`_rerank_pool`), so crediting before this point charged ~30 nodes for
+        # a query that returned 3, and the experience half was missing entirely
+        # while `exp_auto_promote` fires on `access_count`.
         kept_node_ids = [r["id"] for r in results if r.get("source") == "node"]
         if kept_node_ids:
             await self._log_node_access("node_crossref", kept_node_ids)
@@ -847,9 +1048,13 @@ class IntelligenceLayer:
         `nodes[0]` gets a better node than before. No field was removed.
 
         `relevance` on a node is bm25 match strength scaled by query-term
-        coverage. `relevance` on an experience is time decay. They share a name
-        and a range and nothing else - that is what `relevance_kind` reports,
-        and it is why this method does not sort the two lists together.
+        coverage. `relevance` on an experience is that SAME quantity with a
+        bounded +-10% recency nudge when the query had text, and pure time
+        decay only on a browse - which is what `relevance_kind` now reports as
+        `match` against `match_recency` or `recency`. The two lists are still
+        returned separately rather than merge-sorted: this method's contract is
+        two named lists, and collapsing them would be a wire change, not a
+        ranking improvement.
         """
         if not keywords or not keywords.strip():
             return {
@@ -1020,10 +1225,27 @@ class IntelligenceLayer:
                 "node_context", [n["id"] for n in nodes]
             )
 
-        # Experience search
+        # Experience search. The abstention floor is forwarded HERE too:
+        # `kn_context` is a primary daily surface, and a floor that reaches
+        # `recall` alone means the same query abstains on one surface and
+        # floods on another (reproduced at 0.65 in Kairn `00f674bd` - recall
+        # 0 experiences, crossref and context 2).
         experiences = await self.experience.search(
-            text=fts_query,
+            # RAW TEXT, not the shaped query. `_to_fts_query` maps BOTH "no
+            # topic was given" and "a topic whose words are all stop words"
+            # onto None, and None is the engine's BROWSE signal - so an
+            # unanswerable question was answered with the most recent rows.
+            # Measured: `recall("is it ok")` returned 5 unrelated experiences,
+            # AT THE DEFAULT FLOOR, so no abstention gate could ever have
+            # closed it (Kairn `00f674bd` reproduced it at 0.65 and read the
+            # cause one layer too low). `ExperienceEngine.search` shapes raw
+            # text itself and returns [] when no keyword survives, and
+            # re-shaping an already-shaped query is idempotent by its own
+            # contract, so passing the raw text is both safe and the only
+            # place the two meanings can be told apart.
+            text=keywords,
             min_relevance=0.1,
+            min_match=self.experience_min_match,
             limit=limit,
         )
 
@@ -1041,8 +1263,8 @@ class IntelligenceLayer:
                 "type": e.type,
                 "namespace": e.namespace,
                 "content": e.content[:200] if detail == "summary" else e.content,
-                "relevance": round(e.relevance(at=now), 4),
-                "relevance_kind": RELEVANCE_KIND_RECENCY,
+                "relevance": _reported_relevance(e, now),
+                "relevance_kind": e.reported_relevance_kind(),
             }
             if detail != "summary":
                 exp_out["confidence"] = e.confidence

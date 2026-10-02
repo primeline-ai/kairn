@@ -40,6 +40,16 @@ RELEVANCE_KIND_RECENCY = "recency"
 # one result set and not across two.
 RELEVANCE_KIND_MATCH = "match"
 
+# Lexical match strength with a BOUNDED recency nudge, from the experience
+# recall path. It is `bm25 * term_coverage` multiplied by a factor in
+# [0.9, 1.1] derived from the row's time-decay, so recency can order two
+# comparable matches and can never promote a weak fresh hit over a strong old
+# one. It gets its OWN label rather than reusing MATCH because this module
+# exists to stop one word covering two quantities: a caller comparing an
+# experience against a node needs to know that one of the two carries an age
+# term. Rows that never went through a text recall fall back to RECENCY.
+RELEVANCE_KIND_MATCH_RECENCY = "match_recency"
+
 # Embedding cosine similarity, from the semantic recall path. A different scale
 # from MATCH and corpus-independent - which is why it does not share that label
 # even though both answer "how well did this match".
@@ -56,6 +66,7 @@ RELEVANCE_KINDS = frozenset(
     {
         RELEVANCE_KIND_RECENCY,
         RELEVANCE_KIND_MATCH,
+        RELEVANCE_KIND_MATCH_RECENCY,
         RELEVANCE_KIND_SIMILARITY,
         RELEVANCE_KIND_UNSCORED,
     }

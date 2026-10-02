@@ -35,9 +35,11 @@ import sqlite3
 import sys
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import click
+import yaml
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -47,6 +49,46 @@ from kairn.config import Config
 from kairn.relevance import RELEVANCE_KIND_RECENCY
 from kairn.storage.metadata_store import MetadataStore
 from kairn.storage.sqlite_store import SQLiteStore
+
+
+def _validate_experience_min_match(value: object) -> float:
+    """Range-check the ``experience_min_match`` config key, loudly.
+
+    Byte-for-byte the same contract as ``kairn.server._validate_experience_min_match``
+    - see that docstring for why an out-of-range value must raise rather than
+    quietly empty every recall.
+
+    WHY THIS IS DUPLICATED, in order of weight. First: ``kairn/config.py`` is
+    the right home (it is already imported here, costs nothing, and would also
+    cover a future third reader), but it is outside this change's file scope.
+    Second, and only relevant once that is ruled out: importing the other copy
+    from ``kairn.server`` costs a measured +358 ms on every CLI invocation
+    (124 ms -> 482 ms of import time), so that direction is not an option
+    either. ``test_f6_the_two_validator_copies_have_not_drifted`` compares the
+    two ASTs and ``test_f6_*`` drives both through the real command surfaces,
+    so a drift fails the suite rather than shipping.
+    """
+    try:
+        floor = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"experience_min_match must be a number in [0.0, 1.0], got {value!r}"
+        ) from exc
+    # NaN and +-inf fail this comparison too, which is the intent.
+    if not 0.0 <= floor <= 1.0:
+        raise ValueError(
+            f"experience_min_match must be a fraction in [0.0, 1.0], got {floor!r}. "
+            "It is a match-strength floor, NOT a percentage. The quantity it gates "
+            "is bm25 saturated into [0, 1) and scaled by term coverage, so it never "
+            "reaches 1.0 and any value above 1.0 is above every attainable score - "
+            "recall would silently return nothing at all. The reachable range also "
+            "grows with the store: measured against a row's own exact content, "
+            "match strength is ~0.000 on a one-row store, ~0.65 at five rows, "
+            "~0.76 at ten and ~0.92 at a thousand. Try 0.65 on a store of any "
+            "real size (it rejects a one-word question and passes a two-word "
+            "one), or 0.0 to switch the floor off."
+        )
+    return floor
 
 
 @click.group()
@@ -312,6 +354,22 @@ def demo(path: str) -> None:
         click.echo(f"Error: No database at {db_path}. Run 'kairn init' first.", err=True)
         sys.exit(1)
 
+    # The demo used to build an IntelligenceLayer with NO floor at all - the
+    # third of three construction sites, and the one the review's "wired at
+    # every construction site" claim was false about. It now reads the same
+    # config as `serve` and the other CLI commands, and refuses the same
+    # out-of-range values.
+    try:
+        config = Config.load(db_path.parent)
+        experience_min_match = _validate_experience_min_match(config.experience_min_match)
+    except (ValueError, OSError, yaml.YAMLError) as exc:
+        # yaml.YAMLError is reachable only because the demo now READS the
+        # config; before this change it ignored config.yaml entirely, so a
+        # broken one was invisible here. Failing with a message beats both a
+        # traceback and the previous silent success.
+        click.echo(f"Error: could not read the workspace configuration: {exc}", err=True)
+        sys.exit(1)
+
     console = Console()
 
     async def _demo() -> None:
@@ -339,6 +397,7 @@ def demo(path: str) -> None:
             memory=memory_eng,
             experience=experience,
             ideas=ideas_eng,
+            experience_min_match=experience_min_match,
         )
 
         console.print(
@@ -428,6 +487,10 @@ async def _build_intel_stack(db_path: Path):
     from kairn.events.bus import EventBus
 
     config = Config.load(db_path.parent)
+    # Loud on an out-of-range floor. `_run_json` turns the ValueError into the
+    # standard {"_v", "error"} envelope on stderr with a non-zero exit, so the
+    # caller gets a broken-config message instead of an empty result set.
+    experience_min_match = _validate_experience_min_match(config.experience_min_match)
     embedder, embedder_model = embedder_from_config(config)
     store = SQLiteStore(db_path, embedder=embedder, embedder_model=embedder_model)
     await store.initialize()
@@ -449,6 +512,7 @@ async def _build_intel_stack(db_path: Path):
         embedder_model=embedder_model,
         semantic_recall=config.semantic_recall,
         semantic_floor=config.semantic_recall_floor,
+        experience_min_match=experience_min_match,
         semantic_top_n=config.semantic_recall_top_n,
     )
     return store, intel
@@ -618,7 +682,11 @@ def context(path: str, keywords: str, detail: str, limit: int) -> None:
     "--min-relevance",
     default=0.0,
     type=click.FloatRange(0.0, 1.0),
-    help="Minimum RECENCY filter (time-decay), not match quality",
+    help=(
+        "Minimum RECENCY filter (time-decay), not match quality. It gates on "
+        "age ALONE, while the reported relevance is match-aware, so a returned "
+        "row can read below this floor - see relevance_kind on each row."
+    ),
 )
 @click.option("--limit", default=10, type=click.IntRange(1, 50), help="Max results")
 @click.option("--offset", default=0, type=click.IntRange(0), help="Pagination offset")
@@ -640,21 +708,33 @@ def memories(
     async def _run() -> dict:
         store, intel = await _build_intel_stack(db_path)
         try:
+            # Same workspace abstention policy as `kairn recall`. Forwarding
+            # it on one surface and not the other is the N-1-of-N shape.
             experiences = await intel.experience.search(
                 text=text,
                 exp_type=type_,
                 min_relevance=min_relevance,
+                min_match=intel.experience_min_match,
                 limit=limit,
                 offset=offset,
             )
+            # ONE scale for one search: the same helper `kn_recall`,
+            # `kn_crossref`, `kn_context` and the MCP `kn_memories` tool use.
+            # `round(e.relevance(), 4)` here was pure time-decay, so this
+            # command and `kairn recall` reported different quantities for the
+            # same row of the same store. Imported inside the function because
+            # the module is only loaded on this path anyway.
+            from kairn.core.intelligence import _reported_relevance
+
+            now = datetime.now(UTC)
             items = [
                 {
                     "id": e.id,
                     "type": e.type,
                     "content": e.content,
                     "confidence": e.confidence,
-                    "relevance": round(e.relevance(), 4),
-                    "relevance_kind": RELEVANCE_KIND_RECENCY,
+                    "relevance": _reported_relevance(e, now),
+                    "relevance_kind": e.reported_relevance_kind(),
                     "tags": e.tags,
                 }
                 for e in experiences
@@ -955,7 +1035,17 @@ def doctor(path: str, check: str | None, as_json: bool) -> None:
             await store.close()
 
     # _run_json prints and exits; we need the report first to compute exit code.
-    report = asyncio.run(_run())
+    # That makes doctor the 1 of 19 _build_intel_stack callers not wrapped by
+    # _run_json, so it has to reproduce the envelope itself. Without this it
+    # printed a raw traceback on a broken config while every sibling command
+    # printed the JSON envelope - and `doctor --json` promises the same
+    # shape as the MCP tool kn_doctor. The exposure is new: before the config
+    # validator existed, _build_intel_stack could not raise here.
+    try:
+        report = asyncio.run(_run())
+    except ValueError as e:
+        click.echo(json.dumps({"_v": "1.0", "error": str(e)}), err=True)
+        sys.exit(1)
     click.echo(json.dumps(report, indent=2))
     summary = report.get("summary", {})
     # Exit 1 only on fail/error. "warn" is intentionally non-fatal
