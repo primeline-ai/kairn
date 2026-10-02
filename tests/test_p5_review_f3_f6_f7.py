@@ -701,7 +701,7 @@ def test_f7_every_construction_wires_experience_min_match():
             continue
         for py in sorted(root.rglob("*.py")):
             for call in _intelligence_layer_calls(py):
-                census.append((str(py.relative_to(REPO_ROOT)), call.lineno, call))
+                census.append((py.relative_to(REPO_ROOT).as_posix(), call.lineno, call))
 
     # Non-vacuity: four known sites (server.py:_init, cli.py:demo,
     # cli.py:_build_intel_stack, examples/demo.py). If the detector stops

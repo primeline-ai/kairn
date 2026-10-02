@@ -418,7 +418,7 @@ class TestAbstentionFloorReachesEverySite:
                 text_sites += 1
                 if not site.forwards_floor:
                     by_module.setdefault(
-                        str(path.relative_to(_SRC)), []
+                        path.relative_to(_SRC).as_posix(), []
                     ).append(site.lineno)
 
         # NON-VACUITY FIRST. `set() - known` is empty, so a scan that matched
