@@ -101,7 +101,7 @@ def _experience_search_sites(path: Path) -> list[_SearchSite]:
     or a word inside a docstring.
     """
     sites: list[_SearchSite] = []
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -365,7 +365,8 @@ class TestAbstentionFloorReachesEverySite:
             "async def browsing(self):\n"
             "    return await self.experience.search(limit=10)\n"
             "async def unrelated(self):\n"
-            "    return await self.graph.search(text=q)\n"
+            "    return await self.graph.search(text=q)\n",
+            encoding="utf-8",
         )
 
         sites = _experience_search_sites(probe)

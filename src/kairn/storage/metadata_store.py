@@ -283,7 +283,7 @@ class MetadataStore:
 def _load_sql(filename: str) -> str:
     """Load SQL file from the schema package."""
     schema_dir = Path(__file__).parent.parent / "schema"
-    return (schema_dir / filename).read_text()
+    return (schema_dir / filename).read_text(encoding="utf-8")
 
 
 def _row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:

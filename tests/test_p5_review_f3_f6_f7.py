@@ -76,7 +76,7 @@ def _ws(tmp_path: Path) -> Path:
 
 
 def _write_config(ws: Path, value: object) -> None:
-    (ws / "config.yaml").write_text(f"experience_min_match: {value}\n")
+    (ws / "config.yaml").write_text(f"experience_min_match: {value}\n", encoding="utf-8")
 
 
 async def _seed(db: Path) -> None:
@@ -377,21 +377,22 @@ def test_f3_census_no_decay_scale_report_left_anywhere():
         rel = path.relative_to(SRC_KAIRN).as_posix()
         scanned += 1
         allowed = exempt_fn if rel == exempt_file else None
-        offenders += [f"{rel}:{ln}" for ln in _rounds_outside(path.read_text(), allowed)]
+        source = path.read_text(encoding="utf-8")
+        offenders += [f"{rel}:{ln}" for ln in _rounds_outside(source, allowed)]
     # Non-vacuity: a broken glob would scan nothing and pass.
     assert scanned > 10, f"only {scanned} files scanned - the sweep is broken"
     assert not offenders, f"decay-scale relevance reports still present at: {offenders}"
 
     # And the exemption is REAL, not a hole: the definition site does contain
     # the pattern, so a rename of that function would surface it as an offender.
-    definition = (SRC_KAIRN / exempt_file).read_text()
+    definition = (SRC_KAIRN / exempt_file).read_text(encoding="utf-8")
     assert _rounds_outside(definition, None), (
         f"{exempt_file} no longer contains the fallback round() - "
         "the exemption is now a hole that hides nothing and would hide a new copy"
     )
 
     for name in ("server.py", "cli.py"):
-        source = (SRC_KAIRN / name).read_text()
+        source = (SRC_KAIRN / name).read_text(encoding="utf-8")
         assert "_reported_relevance" in _called_names(source), (
             f"{name} never CALLS the shared reported-relevance helper"
         )
@@ -535,7 +536,7 @@ def _function_body_dump(path: Path, name: str) -> str:
     identical, and a duplicated guard that silently drifts is the exact
     N-1-of-N shape this whole review is about.
     """
-    tree = ast.parse(path.read_text(), filename=str(path))
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == name:
             body = list(node.body)
@@ -629,7 +630,7 @@ async def test_zero_floor_leaves_kn_memories_unchanged(tmp_path: Path):
 # ── F7: every construction site carries the floor ────────────────────
 
 def _intelligence_layer_calls(path: Path) -> list[ast.Call]:
-    tree = ast.parse(path.read_text(), filename=str(path))
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found: list[ast.Call] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -660,7 +661,7 @@ def _kwarg_value(call: ast.Call, name: str) -> ast.expr | None:
 
 def _assigned_from_validator(path: Path, varname: str) -> bool:
     """Is `varname` assigned from _validate_experience_min_match(...) here?"""
-    tree = ast.parse(path.read_text(), filename=str(path))
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
             continue
@@ -745,7 +746,7 @@ def test_f7_demo_does_not_silently_proceed_on_an_unreadable_config(tmp_path: Pat
     ws = _ws(tmp_path)
     db = ws / "kairn.db"
     asyncio.run(_seed(db))
-    (ws / "config.yaml").write_text("experience_min_match: [unclosed\n")
+    (ws / "config.yaml").write_text("experience_min_match: [unclosed\n", encoding="utf-8")
 
     result = _cli("demo", str(ws))
     assert result.exit_code != 0, "demo ran the tutorial on a config it could not read"

@@ -281,7 +281,7 @@ class TestF8FloorWiring:
         to record it."""
         sites: list[tuple[str, set[str]]] = []
         for path in SRC.rglob("*.py"):
-            tree = ast.parse(path.read_text(), filename=str(path))
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for call in _calls_named(tree, "IntelligenceLayer"):
                 sites.append((f"{path.name}:{call.lineno}", _kwarg_names(call)))
 
@@ -355,7 +355,7 @@ class TestF8FloorWiring:
         text_sites: list[tuple[str, str]] = []
         browse_sites: list[str] = []
         for path in sorted(SRC.rglob("*.py")):
-            tree = ast.parse(path.read_text(), filename=str(path))
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
                 if not (isinstance(node, ast.Call)
                         and isinstance(node.func, ast.Attribute)
@@ -510,7 +510,7 @@ class TestF2UnroundedOrdering:
         `cli`), and the engine must not reach for it - that is how a rounded
         value got into a threshold in the first place."""
         path = SRC / "core" / "experience.py"
-        tree = ast.parse(path.read_text(), filename=str(path))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         # Names the module actually CONSUMES. A docstring may still discuss
         # the rounded transform, and should - the comment is why the engine
         # does not use it - so this reads the AST, not the text.
