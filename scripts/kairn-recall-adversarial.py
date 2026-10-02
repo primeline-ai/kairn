@@ -47,7 +47,7 @@ def main() -> int:
     ap.add_argument("--label", default=None, help="free-text run label for stdout")
     args = ap.parse_args()
 
-    spec = json.loads(QUESTIONS.read_text())
+    spec = json.loads(QUESTIONS.read_text(encoding="utf-8"))
     k = int(spec.get("default_k", 10))
     queries = spec["queries"]
 

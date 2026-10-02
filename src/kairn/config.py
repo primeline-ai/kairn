@@ -89,7 +89,7 @@ class Config:
         # Load YAML config if exists
         config_file = config.workspace_path / "config.yaml"
         if config_file.exists():
-            with open(config_file) as f:
+            with open(config_file, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
             for key, value in data.items():
                 if hasattr(config, key):
@@ -156,5 +156,5 @@ class Config:
             "semantic_recall_top_n": self.semantic_recall_top_n,
             "experience_min_match": self.experience_min_match,
         }
-        with open(config_file, "w") as f:
+        with open(config_file, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False)
