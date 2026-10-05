@@ -3,6 +3,8 @@
 
 ![kairn](https://raw.githubusercontent.com/primeline-ai/kairn/main/assets/hero.png)
 
+https://github.com/user-attachments/assets/dbaea32c-f88c-4669-935e-2912ef7d7857
+
 > Context-aware knowledge engine for AI assistants.
 
 <!-- mcp-name: io.github.primeline-ai/kairn -->
