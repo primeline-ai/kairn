@@ -1664,7 +1664,7 @@ def import_git(path: str, repos: tuple[str, ...], since: str | None, dry_run: bo
     multiple=True,
     type=click.Path(),
     help="Transcript root to scan (repeatable). Defaults to ~/.claude/projects "
-    "and ~/.claude-secondary/projects if they exist.",
+    "if it exists.",
 )
 @click.option("--since", default=None, help="Only import sessions on/after this date (YYYY-MM-DD)")
 @click.option("--dry-run", is_flag=True, default=False, help="Preview without writing anything")
@@ -1696,8 +1696,7 @@ def import_claude_code(
     resolved_roots = [Path(r).expanduser() for r in roots] if roots else default_roots()
     if not resolved_roots:
         click.echo(
-            "Error: no transcript roots found (looked for ~/.claude/projects and "
-            "~/.claude-secondary/projects). Pass --root PATH.",
+            "Error: no transcript roots found (looked for ~/.claude/projects). Pass --root PATH.",
             err=True,
         )
         sys.exit(1)

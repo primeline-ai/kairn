@@ -359,3 +359,29 @@ async def test_import_schema_canary_checks_newest_file(
     os.utime(new, (1_700_000_000, 1_700_000_000))
     with pytest.raises(SchemaError):
         await import_claude_code(store, [r], config=config)
+
+
+def test_default_root_is_only_the_standard_claude_code_folder(tmp_path, monkeypatch):
+    """With no --root, only ~/.claude/projects is scanned. Any other folder,
+    such as a second account's, is passed explicitly with --root."""
+    from kairn.importers import claude_code
+
+    home = tmp_path / "home"
+    (home / ".claude" / "projects").mkdir(parents=True)
+    (home / ".claude-other" / "projects").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    assert claude_code.default_roots() == [home / ".claude" / "projects"]
+    assert [str(p) for p in claude_code._DEFAULT_ROOTS] == ["~/.claude/projects"]
+
+
+def test_import_help_and_readme_name_only_the_standard_folder():
+    from click.testing import CliRunner
+
+    from kairn.cli import main
+
+    help_text = CliRunner().invoke(main, ["import", "claude-code", "--help"]).output
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    for text in (help_text, readme):
+        assert "~/.claude/projects" in text
+        assert "-secondary" not in text
