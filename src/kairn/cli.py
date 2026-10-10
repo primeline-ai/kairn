@@ -100,12 +100,7 @@ def main() -> None:
     """Kairn — your AI's persistent memory."""
 
 
-@main.command()
-@click.argument("path", type=click.Path(), default="~/.kairn")
-def init(path: str) -> None:
-    """Initialize a new kairn workspace."""
-    workspace = Path(path).expanduser().resolve()
-
+def _init_workspace(workspace: Path) -> None:
     async def _init() -> None:
         # Load-then-save so re-running init on an existing workspace MERGES
         # over the current config.yaml instead of clobbering hand-set values
@@ -117,6 +112,14 @@ def init(path: str) -> None:
         config.save()
 
     asyncio.run(_init())
+
+
+@main.command()
+@click.argument("path", type=click.Path(), default="~/.kairn")
+def init(path: str) -> None:
+    """Initialize a new kairn workspace."""
+    workspace = Path(path).expanduser().resolve()
+    _init_workspace(workspace)
     click.echo(f"Initialized workspace at {workspace}")
     click.echo(f"Database: {workspace / 'kairn.db'}")
     click.echo("Add to Claude Desktop config:")
@@ -126,14 +129,32 @@ def init(path: str) -> None:
 @main.command()
 @click.argument("path", type=click.Path())
 @click.option("--transport", type=click.Choice(["stdio"]), default="stdio")
-def serve(path: str, transport: str) -> None:
+@click.option(
+    "--init",
+    "init_workspace",
+    is_flag=True,
+    default=False,
+    help="Create the workspace (folder, kairn.db, config.yaml) if it does not exist yet.",
+)
+def serve(path: str, transport: str, init_workspace: bool) -> None:
     """Start the MCP server."""
     workspace = Path(path).expanduser().resolve()
     db_path = workspace / "kairn.db"
 
     if not db_path.exists():
-        click.echo(f"Error: No database at {db_path}. Run 'kairn init' first.", err=True)
-        sys.exit(1)
+        if not init_workspace:
+            click.echo(
+                f"Error: No database at {db_path}. Run 'kairn init {workspace}' first, "
+                f"or start the server with 'kairn serve --init {workspace}'.",
+                err=True,
+            )
+            sys.exit(1)
+        try:
+            workspace.mkdir(parents=True, exist_ok=True)
+            _init_workspace(workspace)
+        except OSError as exc:
+            click.echo(f"Error: Could not create workspace at {workspace}: {exc}", err=True)
+            sys.exit(1)
 
     from kairn.server import create_server
 

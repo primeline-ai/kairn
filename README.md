@@ -324,6 +324,7 @@ moves. No cherry-picked runs, no hidden categories.
 ```bash
 kairn init <path>              # Initialize workspace
 kairn serve <path>             # Start MCP server (stdio)
+kairn serve --init <path>      # Create workspace if needed and start MCP server
 kairn status <path>            # Graph stats
 kairn demo <path>              # Interactive tutorial
 kairn benchmark <path>         # Local performance benchmarks (latency, not LongMemEval)
