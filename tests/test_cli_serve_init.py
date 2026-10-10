@@ -274,3 +274,65 @@ def test_serve_init_failure_is_one_line_not_a_traceback(tmp_path: Path) -> None:
     assert "Traceback" not in result.stderr
     assert len([line for line in result.stderr.splitlines() if line.strip()]) == 1, result.stderr
     assert str(workspace.resolve()) in result.stderr
+
+
+def _learn_one_experience(server: _StdioServer) -> None:
+    """A low-confidence learn is stored as an experience, which logs at INFO."""
+    reply = server.request(
+        "tools/call",
+        {
+            "name": "kn_learn",
+            "arguments": {"content": "log level probe", "type": "gotcha", "confidence": "low"},
+        },
+    )
+    assert "error" not in reply, reply
+
+
+def _stderr_after_learning(tmp_path: Path, env: dict[str, str], config: str | None = None) -> str:
+    workspace = tmp_path / "ws"
+    if config is not None:
+        workspace.mkdir()
+        (workspace / "config.yaml").write_text(config, encoding="utf-8")
+    server = _StdioServer("--init", str(workspace), env=env)
+    try:
+        server.handshake()
+        _learn_one_experience(server)
+    finally:
+        server.close()
+    for line in server.stdout_lines:
+        if line.strip():
+            json.loads(line)  # log output must never reach the MCP transport
+    return "".join(server.stderr_lines)
+
+
+def test_serve_logs_at_the_default_info_level_on_stderr(tmp_path: Path) -> None:
+    stderr = _stderr_after_learning(tmp_path, _env())
+    assert "Created experience" in stderr, stderr
+
+
+def test_serve_applies_kairn_log_level(tmp_path: Path) -> None:
+    stderr = _stderr_after_learning(tmp_path, _env(KAIRN_LOG_LEVEL="WARNING"))
+    assert "Created experience" not in stderr, stderr
+
+
+def test_serve_applies_log_level_from_config_yaml(tmp_path: Path) -> None:
+    stderr = _stderr_after_learning(tmp_path, _env(), config="log_level: warning\n")
+    assert "Created experience" not in stderr, stderr
+
+
+def test_serve_rejects_an_unknown_log_level_in_one_line(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "kairn.cli", "serve", "--init", str(tmp_path / "ws")],
+        input="",
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=TIMEOUT_S,
+        env=_env(KAIRN_LOG_LEVEL="LOUD"),
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "Traceback" not in result.stderr
+    lines = [line for line in result.stderr.splitlines() if line.strip()]
+    assert len(lines) == 1, result.stderr
+    assert "log_level" in lines[0] and "LOUD" in lines[0], lines[0]

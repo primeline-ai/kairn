@@ -1,6 +1,11 @@
 """Does recall() actually return both sources when both match?"""
+from datetime import UTC, datetime
+
 import pytest
 import pytest_asyncio
+
+import kairn.core.experience as experience_module
+import kairn.core.intelligence as intelligence_module
 
 from kairn.core.experience import ExperienceEngine
 from kairn.core.graph import GraphEngine
@@ -74,7 +79,7 @@ def _graded(i: int, kind: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_recall_preserves_rank_inside_each_group(engine):
+async def test_recall_preserves_rank_inside_each_group(engine, monkeypatch):
     """The commit claimed "rank inside each group is preserved exactly" and
     nothing tested it. A reviewer applied `reversed(nodes_out)` and the whole
     679-test suite still passed."""
@@ -83,6 +88,21 @@ async def test_recall_preserves_rank_inside_each_group(engine):
                            type="gotcha", confidence="high")
         await engine.learn(content=_graded(i, "trace"),
                            type="gotcha", confidence="low")
+    # ONE CLOCK FOR BOTH CALLS. High- and low-confidence experiences decay at
+    # different rates, so an older "note" and a newer "trace" with the same
+    # match swap places a few milliseconds after they are written. When that
+    # moment fell between the two recalls below, the heads differed and the
+    # test failed on a correct ranking. Frozen after the writes, not before:
+    # decay is capped at 1, so a time before creation would tie every row.
+    frozen = datetime.now(UTC)
+
+    class _FrozenClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen
+
+    monkeypatch.setattr(experience_module, "datetime", _FrozenClock)
+    monkeypatch.setattr(intelligence_module, "datetime", _FrozenClock)
     topic = " ".join(_TERMS)
     big = await engine.recall(topic=topic, limit=50)
     small = await engine.recall(topic=topic, limit=6)
