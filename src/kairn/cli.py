@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import sqlite3
 import sys
 import time
@@ -100,16 +101,24 @@ def main() -> None:
     """Kairn — your AI's persistent memory."""
 
 
-def _init_workspace(workspace: Path) -> None:
+def _init_workspace(workspace: Path, *, preserve_config: bool = False) -> None:
     async def _init() -> None:
-        # Load-then-save so re-running init on an existing workspace MERGES
-        # over the current config.yaml instead of clobbering hand-set values
-        # (e.g. semantic_recall) back to defaults.
-        config = Config.load(workspace_path=workspace)
+        if preserve_config:
+            config = (
+                None if (workspace / "config.yaml").exists() else Config(workspace_path=workspace)
+            )
+        else:
+            # Load-then-save so re-running init on an existing workspace MERGES
+            # over the current config.yaml instead of clobbering hand-set values
+            # (e.g. semantic_recall) back to defaults.
+            config = Config.load(workspace_path=workspace)
         store = SQLiteStore(workspace / "kairn.db")
-        await store.initialize()
-        await store.close()
-        config.save()
+        try:
+            await store.initialize()
+        finally:
+            await store.close()
+        if config is not None:
+            config.save()
 
     asyncio.run(_init())
 
@@ -143,17 +152,19 @@ def serve(path: str, transport: str, init_workspace: bool) -> None:
 
     if not db_path.exists():
         if not init_workspace:
+            quoted_workspace = shlex.quote(str(workspace))
             click.echo(
-                f"Error: No database at {db_path}. Run 'kairn init {workspace}' first, "
-                f"or start the server with 'kairn serve --init {workspace}'.",
+                f"Error: No database at {db_path}. Run 'kairn init {quoted_workspace}' first, "
+                f"or start the server with 'kairn serve --init {quoted_workspace}'.",
                 err=True,
             )
             sys.exit(1)
         try:
             workspace.mkdir(parents=True, exist_ok=True)
-            _init_workspace(workspace)
-        except OSError as exc:
-            click.echo(f"Error: Could not create workspace at {workspace}: {exc}", err=True)
+            _init_workspace(workspace, preserve_config=True)
+        except (OSError, sqlite3.Error, yaml.YAMLError, ValueError) as exc:
+            message = f"Error: Could not create workspace at {workspace}: {exc}"
+            click.echo(" ".join(message.splitlines()), err=True)
             sys.exit(1)
 
     from kairn.server import create_server

@@ -13,23 +13,36 @@ break the client's handshake.
 from __future__ import annotations
 
 import json
+import os
 import queue
+import shlex
+import stat
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 
+import pytest
+
 TIMEOUT_S = 60
 
 
-def _run_kairn(*args: str) -> subprocess.CompletedProcess[str]:
+def _env(**extra: str) -> dict[str, str]:
+    """The test's own environment, without a KAIRN_WORKSPACE leaking in from the shell."""
+    env = {k: v for k, v in os.environ.items() if k != "KAIRN_WORKSPACE"}
+    env.update(extra)
+    return env
+
+
+def _run_kairn(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "kairn.cli", *args],
         capture_output=True,
         text=True,
         check=False,
         timeout=TIMEOUT_S,
+        env=env if env is not None else _env(),
     )
 
 
@@ -42,7 +55,7 @@ def _pump(stream, sink) -> None:
 class _StdioServer:
     """Drive `kairn serve` over stdio with a real deadline (readline blocks)."""
 
-    def __init__(self, *args: str) -> None:
+    def __init__(self, *args: str, env: dict[str, str] | None = None) -> None:
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "kairn.cli", "serve", *args],
             stdin=subprocess.PIPE,
@@ -50,6 +63,7 @@ class _StdioServer:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=env if env is not None else _env(),
         )
         self.stdout_lines: list[str] = []
         self.stderr_lines: list[str] = []
@@ -168,6 +182,8 @@ def test_serve_init_keeps_an_existing_workspace(tmp_path: Path) -> None:
         "high",
     )
     assert learned.returncode == 0, learned.stderr
+    with (workspace / "config.yaml").open("a", encoding="utf-8") as f:
+        f.write("# hand-written note: any rewrite of this file drops it\n")
     config_before = (workspace / "config.yaml").read_bytes()
 
     server = _StdioServer("--init", str(workspace))
@@ -191,3 +207,70 @@ def test_serve_without_init_still_refuses_an_empty_workspace(tmp_path: Path) -> 
     assert "No database" in result.stderr
     assert "--init" in result.stderr, "the error should name the flag that fixes it"
     assert not (workspace / "kairn.db").exists(), "plain serve must not create a store"
+
+
+def test_serve_without_init_quotes_a_path_with_spaces(tmp_path: Path) -> None:
+    workspace = tmp_path / "my drive" / "kairn"
+    workspace.mkdir(parents=True)
+
+    result = _run_kairn("serve", str(workspace))
+
+    assert result.returncode != 0
+    assert f"kairn serve --init {shlex.quote(str(workspace.resolve()))}" in result.stderr, (
+        "the suggested command must be copy-pasteable when the path has a space"
+    )
+
+
+def test_serve_init_keeps_a_config_written_before_the_store(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    hand_written = "# my settings\nlog_level: DEBUG\ndecay_decision: 200\n"
+    (workspace / "config.yaml").write_text(hand_written, encoding="utf-8")
+
+    server = _StdioServer("--init", str(workspace))
+    try:
+        server.handshake()
+        assert _status(server)["nodes"] == 0
+    finally:
+        server.close()
+
+    assert (workspace / "kairn.db").is_file()
+    assert (workspace / "config.yaml").read_text(encoding="utf-8") == hand_written
+
+
+def test_serve_init_writes_into_the_given_path_not_kairn_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "given"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    server = _StdioServer("--init", str(workspace), env=_env(KAIRN_WORKSPACE=str(elsewhere)))
+    try:
+        server.handshake()
+    finally:
+        server.close()
+
+    assert (workspace / "kairn.db").is_file()
+    assert (workspace / "config.yaml").is_file(), (
+        "config.yaml belongs next to the store it describes"
+    )
+    assert list(elsewhere.iterdir()) == [], "serve --init wrote into the KAIRN_WORKSPACE folder"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs POSIX permissions and a non-root user",
+)
+def test_serve_init_failure_is_one_line_not_a_traceback(tmp_path: Path) -> None:
+    workspace = tmp_path / "readonly"
+    workspace.mkdir()
+    workspace.chmod(stat.S_IRUSR | stat.S_IXUSR)  # folder exists, nothing can be created in it
+    try:
+        result = _run_kairn("serve", "--init", str(workspace))
+    finally:
+        workspace.chmod(stat.S_IRWXU)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "Traceback" not in result.stderr
+    assert len([line for line in result.stderr.splitlines() if line.strip()]) == 1, result.stderr
+    assert str(workspace.resolve()) in result.stderr
