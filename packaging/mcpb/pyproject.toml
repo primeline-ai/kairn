@@ -11,9 +11,9 @@
 
 [project]
 name = "kairn-mcpb"
-version = "0.2.1"
+version = "0.3.0"
 description = "MCP Bundle wrapper that runs the published kairn-ai server"
 requires-python = ">=3.11"
 dependencies = [
-    "kairn-ai==0.2.1",
+    "kairn-ai==0.3.0",
 ]
