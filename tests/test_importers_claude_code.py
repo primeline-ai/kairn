@@ -370,6 +370,7 @@ def test_default_root_is_only_the_standard_claude_code_folder(tmp_path, monkeypa
     (home / ".claude" / "projects").mkdir(parents=True)
     (home / ".claude-other" / "projects").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows expanduser reads this, never HOME
 
     assert claude_code.default_roots() == [home / ".claude" / "projects"]
     assert [str(p) for p in claude_code._DEFAULT_ROOTS] == ["~/.claude/projects"]
