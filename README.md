@@ -9,8 +9,7 @@ https://github.com/user-attachments/assets/dbaea32c-f88c-4669-935e-2912ef7d7857
 
 <!-- mcp-name: io.github.primeline-ai/kairn -->
 
-**Status: pre-1.0.** In daily use since February 2026, with 722 tests (see
-[Development](#development)) and a published
+**Status: pre-1.0.** In daily use since February 2026, with a test suite that runs on Linux, macOS and Windows (see [Development](#development)) and a published
 [LongMemEval-S benchmark](#benchmarks). Interfaces may still change between
 releases until 1.0. Feedback and issues welcome.
 
@@ -22,10 +21,11 @@ kairn init ~/brain
 kairn serve ~/brain
 ```
 
-Add it to Claude Code in one line:
+Claude Code and Codex each take one line; `--init` creates `~/brain` and its database on first start, so this works even without `kairn init`:
 
 ```bash
-claude mcp add kairn -- kairn serve ~/brain
+claude mcp add kairn -- kairn serve --init ~/brain
+codex mcp add kairn -- kairn serve --init ~/brain
 ```
 
 Or install it as a one-click bundle, no Python setup required: download the
@@ -40,7 +40,8 @@ For other clients, see [Quick Start](#quick-start) below. New to Kairn? Jump to 
 |---|---|---|
 | PyPI | anyone with Python, and every MCP client | `pip install kairn-ai` |
 | MCP Bundle (`.mcpb`) | Claude Desktop and other bundle-aware apps; no Python install needed | download from [Releases](https://github.com/primeline-ai/kairn/releases) and open it |
-| Claude Code | one line, uses the PyPI install | `claude mcp add kairn -- kairn serve ~/brain` |
+| Claude Code | one line, uses the PyPI install | `claude mcp add kairn -- kairn serve --init ~/brain` |
+| Codex | one line, uses the PyPI install | `codex mcp add kairn -- kairn serve --init ~/brain` |
 
 The bundle carries no Kairn source of its own. It declares `kairn-ai` as a
 dependency and the host resolves it with `uv`, so a bundle install and a
@@ -56,7 +57,7 @@ Kairn is different:
 - **Context Router + Progressive Disclosure** - Automatically loads relevant subgraphs based on keywords, starting with summaries and drilling into details only when needed. No other tool does this.
 - **Knowledge Graph with FTS5** - Not flat storage. Typed relationships (`depends-on`, `resolves`, `causes`) between nodes with provenance tracking and full-text search across everything.
 - **Experience Decay + Auto-Promotion** - Experiences lose relevance over time (biological decay model). Frequently-accessed experiences auto-promote to permanent knowledge. Your AI naturally forgets what doesn't matter.
-- **22 MCP Tools** - Works with Claude Desktop, Cursor, VS Code, Windsurf, and any MCP client. Includes `kn_judge` for 5-verb relationship judgments and `kn_doctor` for read-only health diagnostics.
+- **22 MCP Tools** - Works with Claude Code, Codex, Claude Desktop, Cursor, VS Code, Windsurf, and any MCP client. Includes `kn_judge` for 5-verb relationship judgments and `kn_doctor` for read-only health diagnostics.
 - **Per-Workspace Isolation** - Each workspace is its own isolated SQLite store. JWT auth and role-based access control (owner / maintainer / contributor / reader) ship for team deployments.
 
 ## Quick Start
@@ -70,7 +71,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
   "mcpServers": {
     "kairn": {
       "command": "kairn",
-      "args": ["serve", "~/brain"]
+      "args": ["serve", "--init", "~/brain"]
     }
   }
 }
@@ -85,7 +86,7 @@ Add to `.cursor/mcp.json`:
   "mcpServers": {
     "kairn": {
       "command": "kairn",
-      "args": ["serve", "~/brain"],
+      "args": ["serve", "--init", "~/brain"],
       "env": {
         "KAIRN_LOG_LEVEL": "WARNING"
       }
@@ -104,7 +105,7 @@ Add to `.vscode/mcp.json`:
     "kairn": {
       "type": "stdio",
       "command": "kairn",
-      "args": ["serve", "~/brain"]
+      "args": ["serve", "--init", "~/brain"]
     }
   }
 }
@@ -119,7 +120,7 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
   "mcpServers": {
     "kairn": {
       "command": "kairn",
-      "args": ["serve", "~/brain"]
+      "args": ["serve", "--init", "~/brain"]
     }
   }
 }
@@ -133,7 +134,7 @@ A guided first run, end to end:
 
 ```bash
 pip install kairn-ai
-kairn init ~/brain              # creates the workspace + database
+kairn init ~/brain              # creates the workspace + database (optional: serve --init does it on first start)
 ```
 
 Add the one-liner from above (or your client's Quick Start snippet), then restart the client. Once connected, ask your assistant to remember something:
@@ -295,7 +296,7 @@ Half-lives are calibrated against the real access tail of a production experienc
 
 ![Kairn benchmark scorecard: 56.2% overall on LongMemEval-S, 500 questions scored, per-category accuracy from 91.4% down to a published 10.0% weak cell](https://raw.githubusercontent.com/primeline-ai/kairn/main/assets/benchmark-scorecard.png)
 
-Kairn scores **56.2% overall on LongMemEval-S** (500/500 questions scored,
+Kairn scored **56.2% overall on LongMemEval-S** in the 2026-06-12 run (500/500 questions scored,
 GPT-4o reader + judge, single run, 0 errors). These are the real per-category
 numbers, including the bad ones - each red cell links to its diagnosis:
 
@@ -315,9 +316,7 @@ separately: Kairn declines correctly on **96.7%** of them.
 Recall latency is ~1.4 ms per query (FTS5, in-process, no network). Protocol,
 honesty notes, and reproduction steps: [BENCHMARKS.md](https://github.com/primeline-ai/kairn/blob/main/BENCHMARKS.md).
 
-This scorecard stays current: every release that touches recall re-publishes
-these numbers, and a weak cell stays on the board until the number actually
-moves. No cherry-picked runs, no hidden categories.
+These numbers were measured on 2026-06-12, before the recall changes in 0.3.0 (match-aware experience scoring, coverage-weighted node relevance), and have not been re-measured on 0.3.0 yet. A weak cell stays on the board until the number actually moves. No cherry-picked runs, no hidden categories.
 
 ## CLI
 
@@ -387,9 +386,16 @@ nothing ever leaves your machine.
 
 ```bash
 KAIRN_LOG_LEVEL=INFO|DEBUG|WARNING    # Default: WARNING
-KAIRN_DB_PATH=~/brain/.kairn         # Default: {workspace}/.kairn
-KAIRN_CACHE_SIZE=100                  # LRU cache entries
+KAIRN_WORKSPACE=~/brain               # Folder config.yaml is read from (overrides the serve path for configuration only)
 KAIRN_JWT_SECRET=<your-secret>        # Required for team features
+```
+
+Settings live in `<workspace>/config.yaml`, written by `kairn init`; without it the defaults apply. Semantic recall is opt-in and off by default. It reranks recall with embeddings from a local Ollama server, so stored content never leaves your machine.
+
+```yaml
+semantic_recall: true
+embedding_model: bge-m3                 # ollama pull bge-m3
+embedding_host: http://localhost:11434
 ```
 
 ## Development
