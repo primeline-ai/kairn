@@ -162,7 +162,10 @@ def test_serve_init_creates_missing_workspace_and_answers(tmp_path: Path) -> Non
         server.close()
 
     assert (workspace / "kairn.db").is_file(), "serve --init answered but left no kairn.db"
-    assert (workspace / "config.yaml").is_file(), "serve --init did not write config.yaml like init"
+    # The server runs on defaults without a config.yaml. Writing one at every
+    # first start would race when two clients start at once, so serve --init
+    # never writes it; `kairn init` still does.
+    assert not (workspace / "config.yaml").exists(), "serve --init must not write config.yaml"
     for line in server.stdout_lines:
         if line.strip():
             json.loads(line)  # stdout carries the MCP transport and nothing else
@@ -250,9 +253,6 @@ def test_serve_init_writes_into_the_given_path_not_kairn_workspace(tmp_path: Pat
         server.close()
 
     assert (workspace / "kairn.db").is_file()
-    assert (workspace / "config.yaml").is_file(), (
-        "config.yaml belongs next to the store it describes"
-    )
     assert list(elsewhere.iterdir()) == [], "serve --init wrote into the KAIRN_WORKSPACE folder"
 
 

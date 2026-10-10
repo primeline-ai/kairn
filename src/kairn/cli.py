@@ -101,13 +101,10 @@ def main() -> None:
     """Kairn — your AI's persistent memory."""
 
 
-def _init_workspace(workspace: Path, *, preserve_config: bool = False) -> None:
+def _init_workspace(workspace: Path, *, write_config: bool = True) -> None:
     async def _init() -> None:
-        if preserve_config:
-            config = (
-                None if (workspace / "config.yaml").exists() else Config(workspace_path=workspace)
-            )
-        else:
+        config = None
+        if write_config:
             # Load-then-save so re-running init on an existing workspace MERGES
             # over the current config.yaml instead of clobbering hand-set values
             # (e.g. semantic_recall) back to defaults.
@@ -143,7 +140,7 @@ def init(path: str) -> None:
     "init_workspace",
     is_flag=True,
     default=False,
-    help="Create the workspace (folder, kairn.db, config.yaml) if it does not exist yet.",
+    help="Create the workspace folder and kairn.db if they do not exist yet.",
 )
 def serve(path: str, transport: str, init_workspace: bool) -> None:
     """Start the MCP server."""
@@ -161,7 +158,7 @@ def serve(path: str, transport: str, init_workspace: bool) -> None:
             sys.exit(1)
         try:
             workspace.mkdir(parents=True, exist_ok=True)
-            _init_workspace(workspace, preserve_config=True)
+            _init_workspace(workspace, write_config=False)
         except (OSError, sqlite3.Error, yaml.YAMLError, ValueError) as exc:
             message = f"Error: Could not create workspace at {workspace}: {exc}"
             click.echo(" ".join(message.splitlines()), err=True)
