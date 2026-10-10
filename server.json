@@ -6,13 +6,13 @@
     "url": "https://github.com/primeline-ai/kairn",
     "source": "github"
   },
-  "version": "0.2.1",
+  "version": "0.3.0",
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/primeline-ai/kairn/releases/download/v0.2.1/kairn-0.2.1.mcpb",
+      "identifier": "https://github.com/primeline-ai/kairn/releases/download/v0.3.0/kairn-0.3.0.mcpb",
       "fileSha256": "a326a88bd5bfa6acc3a49d1e6ad895f51997303b101d57ba0b507683b8bcc990",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "transport": {
         "type": "stdio"
       },

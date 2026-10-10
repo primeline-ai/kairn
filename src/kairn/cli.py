@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import sqlite3
 import sys
 import time
@@ -100,23 +101,31 @@ def main() -> None:
     """Kairn — your AI's persistent memory."""
 
 
+def _init_workspace(workspace: Path, *, write_config: bool = True) -> None:
+    async def _init() -> None:
+        config = None
+        if write_config:
+            # Load-then-save so re-running init on an existing workspace MERGES
+            # over the current config.yaml instead of clobbering hand-set values
+            # (e.g. semantic_recall) back to defaults.
+            config = Config.load(workspace_path=workspace)
+        store = SQLiteStore(workspace / "kairn.db")
+        try:
+            await store.initialize()
+        finally:
+            await store.close()
+        if config is not None:
+            config.save()
+
+    asyncio.run(_init())
+
+
 @main.command()
 @click.argument("path", type=click.Path(), default="~/.kairn")
 def init(path: str) -> None:
     """Initialize a new kairn workspace."""
     workspace = Path(path).expanduser().resolve()
-
-    async def _init() -> None:
-        # Load-then-save so re-running init on an existing workspace MERGES
-        # over the current config.yaml instead of clobbering hand-set values
-        # (e.g. semantic_recall) back to defaults.
-        config = Config.load(workspace_path=workspace)
-        store = SQLiteStore(workspace / "kairn.db")
-        await store.initialize()
-        await store.close()
-        config.save()
-
-    asyncio.run(_init())
+    _init_workspace(workspace)
     click.echo(f"Initialized workspace at {workspace}")
     click.echo(f"Database: {workspace / 'kairn.db'}")
     click.echo("Add to Claude Desktop config:")
@@ -126,14 +135,34 @@ def init(path: str) -> None:
 @main.command()
 @click.argument("path", type=click.Path())
 @click.option("--transport", type=click.Choice(["stdio"]), default="stdio")
-def serve(path: str, transport: str) -> None:
+@click.option(
+    "--init",
+    "init_workspace",
+    is_flag=True,
+    default=False,
+    help="Create the workspace folder and kairn.db if they do not exist yet.",
+)
+def serve(path: str, transport: str, init_workspace: bool) -> None:
     """Start the MCP server."""
     workspace = Path(path).expanduser().resolve()
     db_path = workspace / "kairn.db"
 
     if not db_path.exists():
-        click.echo(f"Error: No database at {db_path}. Run 'kairn init' first.", err=True)
-        sys.exit(1)
+        if not init_workspace:
+            quoted_workspace = shlex.quote(str(workspace))
+            click.echo(
+                f"Error: No database at {db_path}. Run 'kairn init {quoted_workspace}' first, "
+                f"or start the server with 'kairn serve --init {quoted_workspace}'.",
+                err=True,
+            )
+            sys.exit(1)
+        try:
+            workspace.mkdir(parents=True, exist_ok=True)
+            _init_workspace(workspace, write_config=False)
+        except (OSError, sqlite3.Error, yaml.YAMLError, ValueError) as exc:
+            message = f"Error: Could not create workspace at {workspace}: {exc}"
+            click.echo(" ".join(message.splitlines()), err=True)
+            sys.exit(1)
 
     from kairn.server import create_server
 
@@ -1635,7 +1664,7 @@ def import_git(path: str, repos: tuple[str, ...], since: str | None, dry_run: bo
     multiple=True,
     type=click.Path(),
     help="Transcript root to scan (repeatable). Defaults to ~/.claude/projects "
-    "and ~/.claude-secondary/projects if they exist.",
+    "if it exists.",
 )
 @click.option("--since", default=None, help="Only import sessions on/after this date (YYYY-MM-DD)")
 @click.option("--dry-run", is_flag=True, default=False, help="Preview without writing anything")
@@ -1667,8 +1696,7 @@ def import_claude_code(
     resolved_roots = [Path(r).expanduser() for r in roots] if roots else default_roots()
     if not resolved_roots:
         click.echo(
-            "Error: no transcript roots found (looked for ~/.claude/projects and "
-            "~/.claude-secondary/projects). Pass --root PATH.",
+            "Error: no transcript roots found (looked for ~/.claude/projects). Pass --root PATH.",
             err=True,
         )
         sys.exit(1)

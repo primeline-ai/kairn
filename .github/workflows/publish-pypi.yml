@@ -1,0 +1,111 @@
+# Publishes on a pushed v* tag through PyPI Trusted Publishing
+# (short-lived OIDC token, no stored secret). The tag must match the package version.
+# A version number can never be re-uploaded, so test and build run before the upload job.
+name: Publish to PyPI
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          python3 - "$tag" <<'PY'
+          import re
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          tag = sys.argv[1]
+          with open("pyproject.toml", "rb") as file:
+              package_version = tomllib.load(file)["project"]["version"]
+          source = Path("src/kairn/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r'^__version__\s*=\s*"([^"]+)"', source, re.MULTILINE)
+          if match is None:
+              print("::error::Could not read __version__ from src/kairn/__init__.py")
+              sys.exit(1)
+          source_version = match.group(1)
+          if tag != package_version or tag != source_version:
+              print(
+                  f"::error::Tag version {tag} must match pyproject.toml "
+                  f"({package_version}) and __version__ ({source_version})"
+              )
+              sys.exit(1)
+          PY
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: false
+          version: "0.12.23"
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Check distributions
+        run: uvx twine==7.0.0 check --strict dist/*
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install "$(ls dist/*.whl)[dev,team]"
+
+      - name: Verify installed wheel import
+        run: |
+          python -c "import kairn, sys; f = kairn.__file__; print(f); sys.exit(0 if 'site-packages' in f else 1)"
+
+      - name: Test
+        run: pytest tests/ -q -o pythonpath= --deselect tests/test_p5_review_f3_f6_f7.py::test_positive_control_imports_come_from_this_worktree
+
+  publish:
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/kairn-ai/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish distributions
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

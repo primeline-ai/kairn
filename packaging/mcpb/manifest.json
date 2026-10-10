@@ -3,7 +3,7 @@
   "manifest_version": "0.4",
   "name": "kairn",
   "display_name": "Kairn",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Context-aware knowledge engine for AI - memory, graph, intelligent routing.",
   "long_description": "Kairn is an air-gapped, zero-dependency knowledge engine exposed over MCP. It stores decisions, patterns, gotchas and preferences as a queryable graph with full-text recall, so an agent can retrieve prior context before acting and save what it learns afterwards. All data stays in a local SQLite workspace on the user's machine.",
   "author": {

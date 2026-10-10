@@ -54,13 +54,8 @@ from kairn.storage.base import StorageBackend
 
 IMPORT_NAMESPACE = "imported-claude-code"
 
-# Default transcript roots: the primary account plus a secondary-account tree
-# (Stage 0 found a real dual-account layout). Only those that exist are scanned;
-# --root overrides/extends this set, it is not mandatory for the common case.
-_DEFAULT_ROOTS = (
-    Path("~/.claude/projects"),
-    Path("~/.claude-secondary/projects"),
-)
+# Only the default transcript folder is scanned; pass other folders with --root.
+_DEFAULT_ROOTS = (Path("~/.claude/projects"),)
 
 # A coarse session summary spans a whole session (many topics); "decision" is the
 # neutral, valid bucket used the same way the git importer uses it as a catch-all
