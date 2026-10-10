@@ -3,14 +3,14 @@
 
 ![kairn](https://raw.githubusercontent.com/primeline-ai/kairn/main/assets/hero.png)
 
-https://github.com/user-attachments/assets/dbaea32c-f88c-4669-935e-2912ef7d7857
+<video src="https://github.com/user-attachments/assets/dbaea32c-f88c-4669-935e-2912ef7d7857"></video>
 
 > Context-aware knowledge engine for AI assistants.
 
 <!-- mcp-name: io.github.primeline-ai/kairn -->
 
-**Status: pre-1.0.** In daily use since February 2026, with a test suite that runs on Linux, macOS and Windows (see [Development](#development)) and a published
-[LongMemEval-S benchmark](#benchmarks). Interfaces may still change between
+**Status: pre-1.0.** In daily use since February 2026, with a test suite that runs on Linux, macOS and Windows (see [Development](https://github.com/primeline-ai/kairn#development)) and a published
+[LongMemEval-S benchmark](https://github.com/primeline-ai/kairn#benchmarks) (measured before 0.3.0). Interfaces may still change between
 releases until 1.0. Feedback and issues welcome.
 
 Other tools give your AI a memory. **Kairn** gives it a knowledge graph with intelligent context routing. It knows what to load, when to load it, and how much - so your AI stays focused, not overwhelmed.
@@ -32,7 +32,7 @@ Or install it as a one-click bundle, no Python setup required: download the
 `.mcpb` file from the [latest release](https://github.com/primeline-ai/kairn/releases/latest)
 and open it with a bundle-aware app such as Claude Desktop.
 
-For other clients, see [Quick Start](#quick-start) below. New to Kairn? Jump to [First 5 Minutes](#first-5-minutes).
+For other clients, see [Quick Start](https://github.com/primeline-ai/kairn#quick-start) below. New to Kairn? Jump to [First 5 Minutes](https://github.com/primeline-ai/kairn#first-5-minutes).
 
 ## Install routes
 
@@ -86,10 +86,7 @@ Add to `.cursor/mcp.json`:
   "mcpServers": {
     "kairn": {
       "command": "kairn",
-      "args": ["serve", "--init", "~/brain"],
-      "env": {
-        "KAIRN_LOG_LEVEL": "WARNING"
-      }
+      "args": ["serve", "--init", "~/brain"]
     }
   }
 }
@@ -156,7 +153,7 @@ Start a **new** session and ask it to recall the same thing - that calls `kn_rec
 ]}
 ```
 
-`kn_learn` stored both a permanent graph node and a decaying experience (high confidence does both, see [Confidence routing](#decay-model)); `kn_recall` found both from a three-word topic.
+`kn_learn` stored both a permanent graph node and a decaying experience (high confidence does both, see [Confidence routing](https://github.com/primeline-ai/kairn#decay-model)); `kn_recall` found both from a three-word topic.
 
 **Read `relevance_kind` before you read `relevance`.** Both rows above show `1.0` and they do not mean the same thing. `match` is lexical match strength (bm25); the experience's `recency` is time-decay - it is 1.0 because the row was created seconds ago, not because it matched well. A third value, `similarity`, is embedding cosine on the semantic-recall path, and `unscored` marks a row the surface had no ranking for and filled in with a constant. The numbers are not comparable across kinds, so do not sort a mixed result set on `relevance` alone. Same caution for `min_relevance` on `kn_recall`: it gates nodes on match strength and experiences on recency, one number against two scales. On `kn_memories` and `kn_prune`, which see experiences only, it is recency - and on `kn_prune` it **deletes**.
 
@@ -176,7 +173,7 @@ Run `kairn status ~/brain` any time as a smoke test - if it prints a JSON stats 
 | Search saved experiences, ranked by relevance and decay | `kn_memories` | You're looking for experience content (solutions, gotchas, workarounds), not graph nodes |
 | Surface everything relevant to a topic in one call | `kn_recall` (flat list) or `kn_context` (subgraph, progressive disclosure: summary first, full detail on demand) | You don't know yet whether the answer is a node or an experience - let Kairn search both |
 
-Everything else (`kn_crossref`, `kn_related`, `kn_connect`, `kn_judge`, `kn_project`/`kn_projects`/`kn_log`, `kn_idea`/`kn_ideas`, `kn_promote_pending`, `kn_prune`, `kn_remove`, `kn_status`, `kn_doctor`) is advanced usage - see the full [22 Tools](#22-tools-kn_-prefix) reference below once you're past the basics.
+Everything else (`kn_crossref`, `kn_related`, `kn_connect`, `kn_judge`, `kn_project`/`kn_projects`/`kn_log`, `kn_idea`/`kn_ideas`, `kn_promote_pending`, `kn_prune`, `kn_remove`, `kn_status`, `kn_doctor`) is advanced usage - see the full [22 Tools](https://github.com/primeline-ai/kairn#22-tools-kn_-prefix) reference below once you're past the basics.
 
 ## 22 Tools (kn_ prefix)
 
@@ -313,7 +310,7 @@ The 500 questions include 30 abstention variants (the right answer is to
 decline); they are counted inside their categories above and scored
 separately: Kairn declines correctly on **96.7%** of them.
 
-Recall latency is ~1.4 ms per query (FTS5, in-process, no network). Protocol,
+Recall latency was ~1.4 ms per query in that run (FTS5, in-process, no network). Protocol,
 honesty notes, and reproduction steps: [BENCHMARKS.md](https://github.com/primeline-ai/kairn/blob/main/BENCHMARKS.md).
 
 These numbers were measured on 2026-06-12, before the recall changes in 0.3.0 (match-aware experience scoring, coverage-weighted node relevance), and have not been re-measured on 0.3.0 yet. A weak cell stays on the board until the number actually moves. No cherry-picked runs, no hidden categories.
@@ -385,17 +382,18 @@ nothing ever leaves your machine.
 ## Configuration
 
 ```bash
-KAIRN_LOG_LEVEL=INFO|DEBUG|WARNING    # Default: WARNING
-KAIRN_WORKSPACE=~/brain               # Folder config.yaml is read from (overrides the serve path for configuration only)
+KAIRN_WORKSPACE=~/brain               # Folder Kairn reads config.yaml from, and where 'kairn workspace' keeps team data; 'kairn serve <path>' still opens the store at <path>
 KAIRN_JWT_SECRET=<your-secret>        # Required for team features
 ```
 
-Settings live in `<workspace>/config.yaml`, written by `kairn init`; without it the defaults apply. Semantic recall is opt-in and off by default. It reranks recall with embeddings from a local Ollama server, so stored content never leaves your machine.
+Settings live in `<workspace>/config.yaml`; `kairn init` writes it and `serve --init` does not, so create it by hand if you started with `serve --init`. Without it the defaults apply. Semantic recall is opt-in and off by default. It reranks recall with embeddings from a local Ollama server, so stored content never leaves your machine.
 
 ```yaml
 semantic_recall: true
 embedding_model: bge-m3                 # ollama pull bge-m3
 embedding_host: http://localhost:11434
+semantic_recall_floor: 0.5              # cosine floor below which semantic recall abstains
+semantic_recall_top_n: 30               # keyword candidates reranked by embeddings
 ```
 
 ## Development
