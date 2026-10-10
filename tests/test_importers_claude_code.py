@@ -373,7 +373,7 @@ def test_default_root_is_only_the_standard_claude_code_folder(tmp_path, monkeypa
     monkeypatch.setenv("USERPROFILE", str(home))  # Windows expanduser reads this, never HOME
 
     assert claude_code.default_roots() == [home / ".claude" / "projects"]
-    assert [str(p) for p in claude_code._DEFAULT_ROOTS] == ["~/.claude/projects"]
+    assert claude_code._DEFAULT_ROOTS == (Path("~/.claude/projects"),)
 
 
 def test_import_help_and_readme_name_only_the_standard_folder():
