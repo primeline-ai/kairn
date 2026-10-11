@@ -378,6 +378,24 @@ not the only control: a real (non-dry-run) run is gated behind an explicit confi
 bounded by its rule set, so `--dry-run` review before a first real import is recommended;
 nothing ever leaves your machine.
 
+## Install as a plugin
+
+Claude Code:
+
+```bash
+claude plugin marketplace add primeline-ai/kairn
+claude plugin install kairn@kairn
+```
+
+Codex:
+
+```bash
+codex plugin marketplace add primeline-ai/kairn
+codex plugin add kairn@kairn
+```
+
+See [the plugin README](plugin/README.md) for what it does and the `codex exec` approval note.
+
 ## Configuration
 
 ```bash

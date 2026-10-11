@@ -1,0 +1,12 @@
+{
+  "name": "kairn",
+  "owner": {"name": "PrimeLine"},
+  "description": "Local knowledge graph memory for Claude Code and Codex.",
+  "plugins": [
+    {
+      "name": "kairn",
+      "source": "./plugin",
+      "description": "Local memory with full-text recall and a recall-and-save skill."
+    }
+  ]
+}
