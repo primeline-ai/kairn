@@ -162,7 +162,9 @@ jobs:
     # config directory is enough for `claude plugin validate`.
     name: plugin validate
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Room for the CLI install and a cold uv download, so a slow start fails
+    # inside the launch test, with its server output, not by job cancellation.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Use an empty Claude Code config for every step
@@ -203,8 +205,9 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: Start the server from the plugin's launch line
         # Runs the exact command in plugin/.mcp.json with an empty home and an
-        # empty uv cache, then calls kn_status. Catches a pin that does not
-        # resolve and a launch line that exits at once, which nothing above can.
+        # empty uv cache, then calls kn_status. Catches a launch line that exits
+        # at once, which nothing above can. While the pinned release is not on
+        # PyPI yet (a version bump before its publish) it skips loudly.
         env:
           KAIRN_PLUGIN_LAUNCH: "1"
         run: |

@@ -1,15 +1,17 @@
 """Start the plugin's server exactly as a client does, and ask it one question.
 
 `tests/test_plugin_package.py` checks what the manifests say; `claude plugin
-details` in CI checks that the server is declared. Neither starts it, so a pin
-to a release that does not resolve, or a launch line that exits at once, would
-stay green. This test runs the command from `plugin/.mcp.json` with no shell,
+details` in CI checks that the server is declared. Neither starts it, so a
+launch line that exits at once, or a published release whose server does not
+come up, would stay green. This test runs the command from `plugin/.mcp.json` with no shell,
 an empty home and an empty uv cache, and calls `kn_status`.
 
 It downloads the pinned release from PyPI, so it only runs when
 KAIRN_PLUGIN_LAUNCH=1 (the `plugin` CI job sets it) and `uvx` is on PATH.
 Right after a version bump the release is not on PyPI yet; that state skips
-loudly, the same way the bundle's runtime smoke does.
+loudly, the same way the bundle's runtime smoke does. The release is published
+from the release PR's head before that PR merges, so the run on the merged
+commit starts the pinned release for real.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 MCP_JSON = ROOT / "plugin" / ".mcp.json"
-TIMEOUT_S = 240
+TIMEOUT_S = 120
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("KAIRN_PLUGIN_LAUNCH") != "1" or shutil.which("uvx") is None,
@@ -66,6 +68,10 @@ def test_the_plugin_launch_line_starts_a_server_that_answers(tmp_path: Path) -> 
         "USERPROFILE": str(home),  # Windows expands ~ from this, never from HOME
         "UV_CACHE_DIR": str(tmp_path / "uv-cache"),
     }
+    # Windows needs these in a child process environment.
+    for name in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP"):
+        if name in os.environ:
+            env[name] = os.environ[name]
     proc = subprocess.Popen(
         [shutil.which(server["command"]), *server["args"]],
         stdin=subprocess.PIPE,
