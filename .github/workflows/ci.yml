@@ -165,6 +165,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Use an empty Claude Code config for every step
+        # The runner context is not available in a job-level env block.
+        run: echo "CLAUDE_CONFIG_DIR=$RUNNER_TEMP/claude-config" >> "$GITHUB_ENV"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
@@ -177,8 +180,6 @@ jobs:
         run: npm install -g --allow-scripts=@anthropic-ai/claude-code "@anthropic-ai/claude-code@2.1.296"
       - name: Validate the plugin and the marketplace
         # --strict turns warnings into failures. No login is needed.
-        env:
-          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
         run: |
           claude --version
           claude plugin validate --strict ./plugin
@@ -187,9 +188,8 @@ jobs:
         # validate checks the shape of the manifests, not what loads: a field
         # can pass --strict and contribute nothing. Installing from this repo as
         # a marketplace and reading `plugin details` shows that the skill and
-        # the MCP server are actually picked up.
-        env:
-          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
+        # the MCP server are declared. It does not start the server; the next
+        # step does.
         run: |
           claude plugin marketplace add "$GITHUB_WORKSPACE"
           claude plugin install kairn@kairn
@@ -197,3 +197,18 @@ jobs:
           echo "$details"
           grep -Eq 'Skills \(1\) +kairn-memory' <<<"$details" || { echo "::error::skill kairn-memory did not load"; exit 1; }
           grep -Eq 'MCP servers \(1\) +kairn' <<<"$details" || { echo "::error::MCP server kairn did not load"; exit 1; }
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Start the server from the plugin's launch line
+        # Runs the exact command in plugin/.mcp.json with an empty home and an
+        # empty uv cache, then calls kn_status. Catches a pin that does not
+        # resolve and a launch line that exits at once, which nothing above can.
+        env:
+          KAIRN_PLUGIN_LAUNCH: "1"
+        run: |
+          python -m pip install pytest
+          # --noconftest: tests/conftest.py imports kairn, which this job does
+          # not install; the launch test only needs uvx and the plugin files.
+          python -m pytest --noconftest tests/test_plugin_launch.py -v -rs

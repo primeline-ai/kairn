@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -28,11 +27,6 @@ PRIVATE_PATTERNS = (
     re.compile(r"\b[a-z0-9-]+\.primeline\.cc\b", re.IGNORECASE),
     re.compile(r"/Users/|/home/|[A-Za-z]:\\+Users\\", re.IGNORECASE),
 )
-
-
-def _version() -> str:
-    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    return pyproject["project"]["version"]
 
 
 def _plugin_files() -> list[Path]:
@@ -70,22 +64,13 @@ def test_plugin_layout() -> None:
 
 @pytest.mark.parametrize("mcp_file", [".mcp.json", ".mcp.codex.json"])
 def test_server_starts_with_init_on_a_fixed_workspace(mcp_file: str) -> None:
+    # The pinned version itself is checked with every other version site in
+    # packaging/mcpb/tests/test_version_parity.py.
     server = _json(PLUGIN / mcp_file)["mcpServers"]["kairn"]
     assert server["command"] == "uvx"
     args = server["args"]
-    assert args[:2] == ["--from", f"kairn-ai=={_version()}"], args
+    assert args[0] == "--from" and args[1].startswith("kairn-ai=="), args
     assert args[2:] == ["kairn", "serve", "--init", "~/.kairn"], args
-
-
-def test_every_pin_and_version_matches_pyproject() -> None:
-    version = _version()
-    pins = []
-    for path in _plugin_files():
-        pins += re.findall(r"kairn-ai==([0-9A-Za-z.+-]+)", path.read_text(encoding="utf-8"))
-    assert pins, "no kairn-ai== pin found in plugin/ - this test would be vacuous"
-    assert set(pins) == {version}, f"plugin pins {sorted(set(pins))} != pyproject {version}"
-    for manifest in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
-        assert _json(PLUGIN / manifest)["version"] == version, manifest
 
 
 def test_plugin_folder_hygiene() -> None:

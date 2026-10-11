@@ -1,4 +1,4 @@
-"""The version of Kairn is written in seven hand-maintained places.
+"""The version of Kairn is written in fourteen hand-maintained places.
 
 A release bumps the root pyproject and publishes to PyPI. If the bundle is not
 bumped with it, `mcpb pack` still succeeds and still validates: the bundle just
@@ -52,6 +52,19 @@ def _sites() -> dict[str, str]:
     server_json = json.loads((REPO / "server.json").read_text(encoding="utf-8"))
     reg_pkg = server_json["packages"][0]
 
+    # The Claude Code / Codex plugin starts `uvx --from kairn-ai==X`. A plugin
+    # pinned to a release that is not the current one installs the old server.
+    plugin = REPO / "plugin"
+
+    def _plugin_pin(rel: str) -> str:
+        text = (plugin / rel).read_text(encoding="utf-8")
+        found = re.findall(r"kairn-ai==([0-9][^\"\s`]*)", text)
+        assert len(set(found)) == 1, f"plugin/{rel}: expected one kairn-ai pin, found {found}"
+        return found[0]
+
+    def _plugin_manifest(rel: str) -> str:
+        return json.loads((plugin / rel).read_text(encoding="utf-8"))["version"]
+
     return {
         "root pyproject.toml": _toml_version(REPO / "pyproject.toml"),
         "server.json": server_json["version"],
@@ -62,6 +75,11 @@ def _sites() -> dict[str, str]:
         "bundle kairn-ai pin": pin.group(1),
         "bundle manifest.json": manifest["version"],
         "src/kairn/server.py FastMCP": fastmcp_version.group(1),
+        "plugin .mcp.json pin": _plugin_pin(".mcp.json"),
+        "plugin .mcp.codex.json pin": _plugin_pin(".mcp.codex.json"),
+        "plugin README pin": _plugin_pin("README.md"),
+        "plugin Claude manifest": _plugin_manifest(".claude-plugin/plugin.json"),
+        "plugin Codex manifest": _plugin_manifest(".codex-plugin/plugin.json"),
     }
 
 
@@ -100,6 +118,11 @@ def test_every_known_site_is_actually_found():
         "src/kairn/server.py FastMCP",
         "server.json",
         "server.json package",
+        "plugin .mcp.json pin",
+        "plugin .mcp.codex.json pin",
+        "plugin README pin",
+        "plugin Claude manifest",
+        "plugin Codex manifest",
     }
     assert set(_sites()) == expected
 
