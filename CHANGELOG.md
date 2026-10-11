@@ -1,6 +1,28 @@
 # Changelog
 
-## 0.3.0 - unreleased
+## 0.3.1 - 2026-10-11
+
+### Changed
+- `kairn serve` opens `~/.kairn` when no path is given, like `kairn init`. The plugin starts `kairn serve --init` without a path.
+
+### Fixed
+- A failed database open waits up to five seconds for aiosqlite's worker thread to stop before returning the error, avoiding "Event loop is closed" after the caller's loop closes. It logs a warning if the thread is still running. aiosqlite 0.21 or newer is required.
+- `KAIRN_LOG_LEVEL` is read by `kairn serve` only, so `kairn init` no longer writes it into config.yaml.
+
+### Added
+- The Kairn plugin for Claude Code and Codex (`plugin/`, installable with `/plugin marketplace add primeline-ai/kairn`).
+
+### All changes since 0.3.0
+- 7e1caef Tests: kairn serve defaults to ~/.kairn, and the plugin command names no path
+- 77ed755 Merge pull request #42 from primeline-ai/docs/plugin-desktop-path
+- 2658f32 Merge pull request #41 from primeline-ai/ci/plugin-launch-windows
+- 46b8707 Merge pull request #40 from primeline-ai/fix/store-open-failure-thread
+- 3606a5a Add the Kairn plugin for Claude Code and Codex (#39)
+- 8134d23 Merge pull request #38 from primeline-ai/fix/followups-after-0.3.0
+- e7ced92 Merge pull request #37 from primeline-ai/chore/server-json-sha-0.3.0
+- d549a1d Merge pull request #36 from primeline-ai/feat/serve-init
+
+## 0.3.0 - 2026-10-10
 
 ### Added
 - `kairn serve --init` creates a missing workspace before starting the MCP server.
