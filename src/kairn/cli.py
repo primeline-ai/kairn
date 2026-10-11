@@ -149,7 +149,7 @@ def init(path: str) -> None:
 
 
 @main.command()
-@click.argument("path", type=click.Path())
+@click.argument("path", type=click.Path(), default="~/.kairn")
 @click.option("--transport", type=click.Choice(["stdio"]), default="stdio")
 @click.option(
     "--init",

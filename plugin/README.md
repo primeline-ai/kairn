@@ -7,7 +7,7 @@ LLM call.
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first,
 and make sure its `uvx` command is on your PATH. The client runs
-`uvx --from kairn-ai==0.3.0 kairn serve --init ~/.kairn` over stdio.
+`uvx --from kairn-ai==0.3.1 kairn serve --init` over stdio, opening `~/.kairn`.
 First start downloads the package and creates an empty local store if needed.
 Knowledge, experiences, and their graph relationships are stored in
 `~/.kairn`. The store itself stays on this machine. Recalled knowledge is
@@ -15,7 +15,7 @@ returned to your agent and becomes part of its conversation with the model.
 
 First start: a cold start downloads the package. Claude Code gives an MCP
 server 30 seconds to start. Run
-`uvx --from kairn-ai==0.3.0 kairn --help` once in a terminal.
+`uvx --from kairn-ai==0.3.1 kairn --help` once in a terminal.
 It downloads and caches the package, then exits. Alternatively, start Claude
 Code with `MCP_TIMEOUT=120000` to raise the limit to 120 seconds.
 `MCP_TIMEOUT` is measured in milliseconds; see
@@ -28,7 +28,7 @@ desktop app still cannot start the server, it does not see `uvx`. For Codex,
 remove the plugin with `codex plugin remove kairn@kairn`, find the full path
 with `command -v uvx` (macOS and Linux) or `where.exe uvx` (Windows), and add
 Kairn by hand with
-`codex mcp add kairn -- /full/path/to/uvx --from kairn-ai==0.3.0 kairn serve --init ~/.kairn`.
+`codex mcp add kairn -- /full/path/to/uvx --from kairn-ai==0.3.1 kairn serve --init`.
 Set `startup_timeout_sec = 120` under `[mcp_servers.kairn]` in
 `~/.codex/config.toml`, because the first start downloads the package.
 
@@ -54,14 +54,14 @@ codex plugin add kairn@kairn
 ## Existing stores
 
 If you already use another folder, such as `~/brain` from the main README,
-the plugin starts a new empty store in `~/.kairn`. It does not migrate your
-existing knowledge. Point the plugin at your folder only by editing the
-path argument in both plugin MCP files: `.mcp.json` and `.mcp.codex.json`.
-A plugin update or reinstall replaces the files in the client's plugin
-cache, so a hand edit there is lost.
-For a lasting setup with another folder, skip the plugin and add Kairn by
-hand: `claude mcp add kairn -- uvx --from kairn-ai==0.3.0 kairn serve --init ~/brain`
-(Codex: `codex mcp add kairn -- uvx --from kairn-ai==0.3.0 kairn serve --init ~/brain`).
+the plugin starts a new empty store in `~/.kairn`.
+It does not migrate your existing knowledge.
+`KAIRN_WORKSPACE` does not move the plugin's store;
+it only changes where config.yaml is read from.
+For a lasting setup with another folder, skip the plugin and
+add Kairn by hand:
+`claude mcp add kairn -- uvx --from kairn-ai==0.3.1 kairn serve --init ~/brain`
+(Codex: `codex mcp add kairn -- uvx --from kairn-ai==0.3.1 kairn serve --init ~/brain`).
 
 Codex keys plugin MCP servers by bare name, so a hand-added `kairn` server
 and the plugin's `kairn` server collapse into one entry. Claude Code shows

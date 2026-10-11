@@ -1,6 +1,6 @@
 {
   "name": "kairn",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A local knowledge graph with full-text recall, started by the client over stdio, with no LLM call needed to save or recall.",
   "author": {"name": "PrimeLine"},
   "license": "MIT",

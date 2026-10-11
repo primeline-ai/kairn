@@ -9,8 +9,8 @@
 
 <!-- mcp-name: io.github.primeline-ai/kairn -->
 
-**Status: pre-1.0.** In daily use since February 2026, with a test suite that runs on Linux, macOS and Windows (see [Development](https://github.com/primeline-ai/kairn/blob/v0.3.0/README.md#development)) and a published
-[LongMemEval-S benchmark](https://github.com/primeline-ai/kairn/blob/v0.3.0/README.md#benchmarks) (measured before 0.3.0). Interfaces may still change between
+**Status: pre-1.0.** In daily use since February 2026, with a test suite that runs on Linux, macOS and Windows (see [Development](https://github.com/primeline-ai/kairn/blob/v0.3.1/README.md#development)) and a published
+[LongMemEval-S benchmark](https://github.com/primeline-ai/kairn/blob/v0.3.1/README.md#benchmarks) (measured before 0.3.0). Interfaces may still change between
 releases until 1.0. Feedback and issues welcome.
 
 Other tools give your AI a memory. **Kairn** gives it a knowledge graph with intelligent context routing. It knows what to load, when to load it, and how much - so your AI stays focused, not overwhelmed.
@@ -32,7 +32,7 @@ Or install it as a one-click bundle, no Python setup required: download the
 `.mcpb` file from the [latest release](https://github.com/primeline-ai/kairn/releases/latest)
 and open it with a bundle-aware app such as Claude Desktop.
 
-For other clients, see [Quick Start](https://github.com/primeline-ai/kairn/blob/v0.3.0/README.md#quick-start) below. New to Kairn? Jump to [First 5 Minutes](https://github.com/primeline-ai/kairn/blob/v0.3.0/README.md#first-5-minutes).
+For other clients, see [Quick Start](https://github.com/primeline-ai/kairn/blob/v0.3.1/README.md#quick-start) below. New to Kairn? Jump to [First 5 Minutes](https://github.com/primeline-ai/kairn/blob/v0.3.1/README.md#first-5-minutes).
 
 ## Install routes
 
@@ -153,7 +153,7 @@ Start a **new** session and ask it to recall the same thing - that calls `kn_rec
 ]}
 ```
 
-`kn_learn` stored both a permanent graph node and a decaying experience (high confidence does both, see [Confidence routing](https://github.com/primeline-ai/kairn/blob/v0.3.0/README.md#decay-model)); `kn_recall` found both from a three-word topic.
+`kn_learn` stored both a permanent graph node and a decaying experience (high confidence does both, see [Confidence routing](https://github.com/primeline-ai/kairn/blob/v0.3.1/README.md#decay-model)); `kn_recall` found both from a three-word topic.
 
 **Read `relevance_kind` before you read `relevance`.** Both rows above show `1.0` and they do not mean the same thing. `match` is lexical match strength (bm25); the experience's `recency` is time-decay - it is 1.0 because the row was created seconds ago, not because it matched well. A third value, `similarity`, is embedding cosine on the semantic-recall path, and `unscored` marks a row the surface had no ranking for and filled in with a constant. The numbers are not comparable across kinds, so do not sort a mixed result set on `relevance` alone. Same caution for `min_relevance` on `kn_recall`: it gates nodes on match strength and experiences on recency, one number against two scales. On `kn_memories` and `kn_prune`, which see experiences only, it is recency - and on `kn_prune` it **deletes**.
 
@@ -173,7 +173,7 @@ Run `kairn status ~/brain` any time as a smoke test - if it prints a JSON stats 
 | Search saved experiences, ranked by relevance and decay | `kn_memories` | You're looking for experience content (solutions, gotchas, workarounds), not graph nodes |
 | Surface everything relevant to a topic in one call | `kn_recall` (flat list) or `kn_context` (subgraph, progressive disclosure: summary first, full detail on demand) | You don't know yet whether the answer is a node or an experience - let Kairn search both |
 
-Everything else (`kn_crossref`, `kn_related`, `kn_connect`, `kn_judge`, `kn_project`/`kn_projects`/`kn_log`, `kn_idea`/`kn_ideas`, `kn_promote_pending`, `kn_prune`, `kn_remove`, `kn_status`, `kn_doctor`) is advanced usage - see the full [22 Tools](https://github.com/primeline-ai/kairn/blob/v0.3.0/README.md#22-tools-kn_-prefix) reference below once you're past the basics.
+Everything else (`kn_crossref`, `kn_related`, `kn_connect`, `kn_judge`, `kn_project`/`kn_projects`/`kn_log`, `kn_idea`/`kn_ideas`, `kn_promote_pending`, `kn_prune`, `kn_remove`, `kn_status`, `kn_doctor`) is advanced usage - see the full [22 Tools](https://github.com/primeline-ai/kairn/blob/v0.3.1/README.md#22-tools-kn_-prefix) reference below once you're past the basics.
 
 ## 22 Tools (kn_ prefix)
 
@@ -318,9 +318,9 @@ These numbers were measured on 2026-06-12, before the recall changes in 0.3.0 (m
 ## CLI
 
 ```bash
-kairn init <path>              # Initialize workspace
-kairn serve <path>             # Start MCP server (stdio)
-kairn serve --init <path>      # Create workspace if needed and start MCP server
+kairn init [<path>]            # Initialize workspace; defaults to ~/.kairn
+kairn serve [<path>]           # Start MCP server (stdio); defaults to ~/.kairn
+kairn serve --init [<path>]    # Create workspace if needed and start MCP server; defaults to ~/.kairn
 kairn status <path>            # Graph stats
 kairn demo <path>              # Interactive tutorial
 kairn benchmark <path>         # Local performance benchmarks (latency, not LongMemEval)
@@ -403,7 +403,7 @@ See [the plugin README](https://github.com/primeline-ai/kairn/blob/main/plugin/R
 ## Configuration
 
 ```bash
-KAIRN_WORKSPACE=~/brain               # Folder Kairn reads config.yaml from, and where 'kairn workspace' keeps team data; 'kairn serve <path>' still opens the store at <path>
+KAIRN_WORKSPACE=~/brain               # Sets where config.yaml is read from and where 'kairn workspace' keeps team data; 'kairn serve' opens the store at the given path, or ~/.kairn without one, regardless of KAIRN_WORKSPACE
 KAIRN_JWT_SECRET=<your-secret>        # Required for team features
 KAIRN_LOG_LEVEL=WARNING               # Level of Kairn's log lines on stderr: DEBUG, INFO, WARNING, ERROR or CRITICAL; default INFO; overrides log_level in config.yaml
 ```

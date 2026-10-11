@@ -2,7 +2,7 @@
   "mcpServers": {
     "kairn": {
       "command": "uvx",
-      "args": ["--from", "kairn-ai==0.3.0", "kairn", "serve", "--init", "~/.kairn"],
+      "args": ["--from", "kairn-ai==0.3.1", "kairn", "serve", "--init"],
       "startup_timeout_sec": 120
     }
   }

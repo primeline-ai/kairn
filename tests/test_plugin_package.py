@@ -63,14 +63,19 @@ def test_plugin_layout() -> None:
 
 
 @pytest.mark.parametrize("mcp_file", [".mcp.json", ".mcp.codex.json"])
-def test_server_starts_with_init_on_a_fixed_workspace(mcp_file: str) -> None:
+def test_server_starts_with_init_and_names_no_path(mcp_file: str) -> None:
     # The pinned version itself is checked with every other version site in
     # packaging/mcpb/tests/test_version_parity.py.
     server = _json(PLUGIN / mcp_file)["mcpServers"]["kairn"]
     assert server["command"] == "uvx"
     args = server["args"]
     assert args[0] == "--from" and args[1].startswith("kairn-ai=="), args
-    assert args[2:] == ["kairn", "serve", "--init", "~/.kairn"], args
+    # `kairn serve` defaults to ~/.kairn. The directory checklist blocks any
+    # path in an MCP server command that does not start from
+    # ${CLAUDE_PLUGIN_ROOT} when the plugin sits in a subfolder of its repo.
+    assert args[2:] == ["kairn", "serve", "--init"], args
+    for arg in [server["command"], *args]:
+        assert not any(mark in arg for mark in ("/", "\\", "~", "$")), arg
 
 
 def test_plugin_folder_hygiene() -> None:
