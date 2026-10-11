@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import re
+import struct
+import zlib
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,15 @@ ROOT = Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "plugin"
 MARKETPLACE = ROOT / ".claude-plugin" / "marketplace.json"
 MAX_FILE_BYTES = 256 * 1024
+# The directory listing icon, named by `icon` in plugin.json. The portal's
+# rules: a square PNG or JPEG, 512 to 2048 px per side, under 2 MB. The
+# binding size limit is MAX_FILE_BYTES above (256 KiB, every plugin file).
+# It is the plugin's only binary file, so it is checked here instead of by
+# the text-based privacy scan, and it may carry no metadata chunks.
+ICON = PLUGIN / ".claude-plugin" / "icon.png"
+ICON_MIN_PX, ICON_MAX_PX, ICON_MAX_BYTES = 512, 2048, 2 * 1024 * 1024
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+PNG_ALLOWED_CHUNKS = {b"IHDR", b"PLTE", b"IDAT", b"IEND"}
 # The two ids in the root README's example output come from a throwaway demo
 # store. Any other 8-hex id in the README or the plugin is treated as a leak.
 README_DEMO_IDS = {"002d9c22", "d0710c2f"}
@@ -50,6 +61,7 @@ def test_plugin_layout() -> None:
         ".mcp.json",
         ".mcp.codex.json",
         "skills/kairn-memory/SKILL.md",
+        ".claude-plugin/icon.png",
         "README.md",
         "LICENSE",
     ):
@@ -91,7 +103,8 @@ def test_plugin_folder_hygiene() -> None:
 
 
 def _privacy_targets() -> list[Path]:
-    return [*_plugin_files(), MARKETPLACE, ROOT / "README.md"]
+    # The icon is the one binary file; every other plugin file is read as text.
+    return [*(p for p in _plugin_files() if p != ICON), MARKETPLACE, ROOT / "README.md"]
 
 
 def test_no_private_data_in_plugin_or_readme() -> None:
@@ -104,3 +117,83 @@ def test_no_private_data_in_plugin_or_readme() -> None:
         allowed = README_DEMO_IDS if path == ROOT / "README.md" else set()
         ids = set(NODE_ID.findall(text)) - allowed
         assert not ids, f"{rel} contains what look like Kairn node ids: {sorted(ids)}"
+
+
+
+def _png_chunks(data: bytes) -> list[bytes] | None:
+    """The chunk types of a PNG, or None if the chunk structure is broken."""
+    chunks, pos = [], len(PNG_SIGNATURE)
+    while pos + 12 <= len(data):
+        (length,) = struct.unpack(">I", data[pos : pos + 4])
+        kind = data[pos + 4 : pos + 8]
+        end = pos + 12 + length
+        if end > len(data):
+            return None
+        if zlib.crc32(data[pos + 4 : end - 4]) != struct.unpack(">I", data[end - 4 : end])[0]:
+            return None
+        chunks.append(kind)
+        pos = end
+        if kind == b"IEND":
+            return chunks if pos == len(data) else None
+    return None
+
+
+def _icon_problems(data: bytes) -> list[str]:
+    """What is wrong with a PNG for the directory icon."""
+    if len(data) >= ICON_MAX_BYTES:
+        return [f"{len(data)} bytes is not under 2 MB"]
+    if not data.startswith(PNG_SIGNATURE) or len(data) < 33 or data[8:16] != b"\x00\x00\x00\rIHDR":
+        return ["not a PNG"]
+    chunks = _png_chunks(data)
+    if chunks is None or chunks[0] != b"IHDR":
+        return ["not a PNG"]
+    width, height = struct.unpack(">II", data[16:24])
+    problems = []
+    if width != height:
+        problems.append(f"not square: {width}x{height}")
+    if not ICON_MIN_PX <= min(width, height) <= max(width, height) <= ICON_MAX_PX:
+        problems.append(f"{width}x{height} is outside {ICON_MIN_PX}-{ICON_MAX_PX} px")
+    extra = sorted({c.decode("latin-1") for c in chunks} - {c.decode() for c in PNG_ALLOWED_CHUNKS})
+    if extra:
+        problems.append(f"metadata chunks {extra}")
+    return problems
+
+
+def _chunk(kind: bytes, body: bytes) -> bytes:
+    return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+
+def _png(width: int, height: int, *, extra: bytes = b"") -> bytes:
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return PNG_SIGNATURE + _chunk(b"IHDR", ihdr) + extra + _chunk(b"IDAT", b"") + _chunk(b"IEND", b"")
+
+
+def test_listing_icon_is_a_square_png_in_range() -> None:
+    assert _json(PLUGIN / ".claude-plugin" / "plugin.json")["icon"] == "./.claude-plugin/icon.png"
+    assert _icon_problems(ICON.read_bytes()) == []
+
+
+@pytest.mark.parametrize("px", [ICON_MIN_PX, 1024, ICON_MAX_PX])
+def test_icon_check_accepts_a_valid_png(px: int) -> None:
+    assert _icon_problems(_png(px, px)) == []
+
+
+# Short ids: pytest puts the id into an environment variable, and Windows
+# refuses one over 32,767 characters (pytest-dev/pytest#6881).
+@pytest.mark.parametrize(
+    ("make", "expected"),
+    [
+        (lambda: b"GIF89a" + bytes(32), "not a PNG"),
+        (lambda: _png(1024, 1024)[:20], "not a PNG"),
+        (lambda: _png(1024, 1024)[:-12], "not a PNG"),
+        (lambda: _png(1024, 768), "not square"),
+        (lambda: _png(ICON_MIN_PX - 1, ICON_MIN_PX - 1), "outside"),
+        (lambda: _png(ICON_MAX_PX + 1, ICON_MAX_PX + 1), "outside"),
+        (lambda: _png(1024, 1024, extra=_chunk(b"tEXt", b"Comment\x00/home/x")), "metadata"),
+        (lambda: _png(1024, 1024) + bytes(ICON_MAX_BYTES - len(_png(1024, 1024))), "not under 2 MB"),
+    ],
+    ids=["gif", "truncated-header", "no-iend", "not-square", "too-small", "too-large", "text-chunk", "exactly-2mb"],
+)
+def test_icon_check_rejects_a_wrong_file(make, expected: str) -> None:
+    problems = _icon_problems(make())
+    assert any(expected in problem for problem in problems), problems
