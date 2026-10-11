@@ -54,13 +54,13 @@ codex plugin add kairn@kairn
 ## Existing stores
 
 If you already use another folder, such as `~/brain` from the main README,
-the plugin starts a new empty store in `~/.kairn`. It does not migrate your
-existing knowledge. Point the plugin at your folder only by adding a
-path argument in both plugin MCP files: `.mcp.json` and `.mcp.codex.json`.
-A plugin update or reinstall replaces the files in the client's plugin
-cache, so a hand edit there is lost.
-For a lasting setup with another folder, skip the plugin and add Kairn by
-hand: `claude mcp add kairn -- uvx --from kairn-ai==0.3.1 kairn serve --init ~/brain`
+the plugin starts a new empty store in `~/.kairn`.
+It does not migrate your existing knowledge.
+`KAIRN_WORKSPACE` does not move the plugin's store;
+it only changes where config.yaml is read from.
+For a lasting setup with another folder, skip the plugin and
+add Kairn by hand:
+`claude mcp add kairn -- uvx --from kairn-ai==0.3.1 kairn serve --init ~/brain`
 (Codex: `codex mcp add kairn -- uvx --from kairn-ai==0.3.1 kairn serve --init ~/brain`).
 
 Codex keys plugin MCP servers by bare name, so a hand-added `kairn` server

@@ -318,7 +318,7 @@ These numbers were measured on 2026-06-12, before the recall changes in 0.3.0 (m
 ## CLI
 
 ```bash
-kairn init <path>              # Initialize workspace
+kairn init [<path>]            # Initialize workspace; defaults to ~/.kairn
 kairn serve [<path>]           # Start MCP server (stdio); defaults to ~/.kairn
 kairn serve --init [<path>]    # Create workspace if needed and start MCP server; defaults to ~/.kairn
 kairn status <path>            # Graph stats
@@ -403,7 +403,7 @@ See [the plugin README](https://github.com/primeline-ai/kairn/blob/main/plugin/R
 ## Configuration
 
 ```bash
-KAIRN_WORKSPACE=~/brain               # Folder Kairn reads config.yaml from, and where 'kairn workspace' keeps team data; 'kairn serve <path>' still opens the store at <path>
+KAIRN_WORKSPACE=~/brain               # Sets where config.yaml is read from and where 'kairn workspace' keeps team data; 'kairn serve' opens the store at the given path, or ~/.kairn without one, regardless of KAIRN_WORKSPACE
 KAIRN_JWT_SECRET=<your-secret>        # Required for team features
 KAIRN_LOG_LEVEL=WARNING               # Level of Kairn's log lines on stderr: DEBUG, INFO, WARNING, ERROR or CRITICAL; default INFO; overrides log_level in config.yaml
 ```

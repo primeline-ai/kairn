@@ -4,6 +4,7 @@
 
 ### Changed
 - `kairn serve` opens `~/.kairn` when no path is given, like `kairn init`. The plugin starts `kairn serve --init` without a path.
+- `kairn serve` reads its log level from `KAIRN_LOG_LEVEL` or `log_level` in config.yaml (default `INFO`) before `--init`, and exits 1 with a one-line error on an unknown level or an unreadable config.yaml.
 
 ### Fixed
 - A failed database open waits up to five seconds for aiosqlite's worker thread to stop before returning the error, avoiding "Event loop is closed" after the caller's loop closes. It logs a warning if the thread is still running. aiosqlite 0.21 or newer is required.
@@ -13,14 +14,12 @@
 - The Kairn plugin for Claude Code and Codex (`plugin/`, installable with `/plugin marketplace add primeline-ai/kairn`).
 
 ### All changes since 0.3.0
-- 7e1caef Tests: kairn serve defaults to ~/.kairn, and the plugin command names no path
-- 77ed755 Merge pull request #42 from primeline-ai/docs/plugin-desktop-path
-- 2658f32 Merge pull request #41 from primeline-ai/ci/plugin-launch-windows
-- 46b8707 Merge pull request #40 from primeline-ai/fix/store-open-failure-thread
+- 8134d23 Follow-ups after 0.3.0: log level, registry confirm step, test clock (#38)
 - 3606a5a Add the Kairn plugin for Claude Code and Codex (#39)
-- 8134d23 Merge pull request #38 from primeline-ai/fix/followups-after-0.3.0
-- e7ced92 Merge pull request #37 from primeline-ai/chore/server-json-sha-0.3.0
-- d549a1d Merge pull request #36 from primeline-ai/feat/serve-init
+- 46b8707 Wait for aiosqlite's worker thread on a failed database open (#40)
+- 2658f32 Plugin launch test on Windows and per-tool Codex approval in the plugin README (#41)
+- 77ed755 Plugin README desktop PATH guidance (#42)
+- #43
 
 ## 0.3.0 - 2026-10-10
 
