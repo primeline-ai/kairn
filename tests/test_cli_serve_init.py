@@ -201,6 +201,26 @@ def test_serve_init_without_a_path_uses_kairn_in_home(tmp_path: Path) -> None:
     assert (home / ".kairn" / "kairn.db").is_file()
 
 
+def test_serve_without_a_path_ignores_kairn_workspace_for_the_store(tmp_path: Path) -> None:
+    # KAIRN_WORKSPACE only says where config.yaml is read from, as with an
+    # explicit path. The 0.3.0 plugin passed ~/.kairn explicitly, so a user
+    # with KAIRN_WORKSPACE set keeps the same store after the upgrade.
+    home = tmp_path / "home"
+    home.mkdir()
+    settings = tmp_path / "settings"
+    settings.mkdir()
+    env = _fake_home_env(home)
+    env["KAIRN_WORKSPACE"] = str(settings)
+    server = _StdioServer("--init", env=env)
+    try:
+        server.handshake()
+        assert Path(_status(server)["db_path"]) == (home / ".kairn" / "kairn.db").resolve()
+    finally:
+        server.close()
+
+    assert list(settings.iterdir()) == [], "serve --init wrote into the KAIRN_WORKSPACE folder"
+
+
 def test_serve_and_init_share_the_default_workspace(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
