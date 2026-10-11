@@ -154,3 +154,26 @@ jobs:
           name: kairn-${{ steps.pypi.outputs.version }}.mcpb
           path: ${{ runner.temp }}/kairn.mcpb
           if-no-files-found: error
+
+  plugin:
+    # The Claude Code / Codex plugin in plugin/ and the root marketplace file.
+    # The pytest suite checks pins, hygiene and privacy; this job runs the
+    # official validator, which needs Node. It runs without a login: an empty
+    # config directory is enough for `claude plugin validate`.
+    name: plugin validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Validate the plugin and the marketplace
+        # Pinned so a validator release cannot change what passes here with no
+        # commit in this repo. --strict turns warnings into failures.
+        env:
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
+        run: |
+          mkdir -p "$CLAUDE_CONFIG_DIR"
+          npx -y "@anthropic-ai/claude-code@2.1.296" plugin validate --strict ./plugin
+          npx -y "@anthropic-ai/claude-code@2.1.296" plugin validate --strict .
