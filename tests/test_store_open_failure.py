@@ -18,6 +18,7 @@ import sys
 import threading
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from kairn.storage import _connect
@@ -36,8 +37,30 @@ needs_posix_permissions = pytest.mark.skipif(
 
 
 def _aiosqlite_worker_idents() -> set[int]:
-    """Idents of live aiosqlite connection worker threads (same check as tests/test_server.py)."""
-    return {t.ident for t in threading.enumerate() if "_connection_worker_thread" in t.name}
+    """Idents of live aiosqlite worker threads, in both shapes aiosqlite has used.
+
+    Up to 0.21 the Connection object is itself the Thread (named "Thread-N");
+    from 0.22 it starts a separate thread whose target is
+    `_connection_worker_thread`.
+    """
+    return {
+        t.ident
+        for t in threading.enumerate()
+        if isinstance(t, aiosqlite.Connection) or "_connection_worker_thread" in t.name
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_thread_check_sees_a_live_connection(tmp_path: Path) -> None:
+    """Positive control: without it, a filter that matches nothing makes the test below vacuous."""
+    baseline = _aiosqlite_worker_idents()
+    store = SQLiteStore(tmp_path / "live.db")
+    await store.initialize()
+    try:
+        live = _aiosqlite_worker_idents() - baseline
+        assert live, "the thread check cannot see a live connection"
+    finally:
+        await store.close()
 
 
 @needs_posix_permissions
