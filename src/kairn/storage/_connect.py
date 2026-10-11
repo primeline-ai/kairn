@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 from pathlib import Path
 
 import aiosqlite
 
 
 async def open_connection(db_path: Path) -> aiosqlite.Connection:
-    """Probe the file first so a failed aiosqlite open cannot outlive the event loop."""
+    """Wait for aiosqlite's worker thread when opening the database fails.
 
-    def _probe(path: Path) -> None:
-        sqlite3.connect(str(path)).close()
-
-    await asyncio.to_thread(_probe, db_path)
-    return await aiosqlite.connect(str(db_path))
+    aiosqlite's connect does not wait for its worker thread to stop when the
+    open fails. The thread could finish after the caller's event loop closed
+    and print "Event loop is closed". This waits while the loop is still running.
+    We use aiosqlite's internal _thread attribute because there is no public
+    way to wait for the stop. In 0.20, the connection itself is the thread.
+    """
+    conn = aiosqlite.connect(str(db_path))
+    try:
+        return await conn
+    except BaseException:
+        worker = getattr(conn, "_thread", conn)
+        if hasattr(worker, "join"):
+            await asyncio.to_thread(worker.join, 10)
+        raise
