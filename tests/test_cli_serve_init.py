@@ -179,6 +179,66 @@ def test_serve_init_creates_missing_workspace_and_answers(tmp_path: Path) -> Non
             json.loads(line)  # stdout carries the MCP transport and nothing else
 
 
+def _fake_home_env(home: Path) -> dict[str, str]:
+    # Path.home() reads HOME on POSIX and USERPROFILE on Windows.
+    return _env(HOME=str(home), USERPROFILE=str(home))
+
+
+def test_serve_init_without_a_path_uses_kairn_in_home(tmp_path: Path) -> None:
+    # The plugin starts `kairn serve --init` with no path: the directory
+    # checklist blocks any path in an MCP server command that does not start
+    # from ${CLAUDE_PLUGIN_ROOT}. The default is the same ~/.kairn that
+    # `kairn init` uses.
+    home = tmp_path / "home"
+    home.mkdir()
+    server = _StdioServer("--init", env=_fake_home_env(home))
+    try:
+        server.handshake()
+        assert Path(_status(server)["db_path"]) == (home / ".kairn" / "kairn.db").resolve()
+    finally:
+        server.close()
+
+    assert (home / ".kairn" / "kairn.db").is_file()
+
+
+def test_serve_and_init_share_the_default_workspace(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    env = _fake_home_env(home)
+    assert _run_kairn("init", env=env).returncode == 0
+    learned = _run_kairn(
+        "learn",
+        str(home / ".kairn"),
+        "--content",
+        "Knowledge saved before the plugin starts",
+        "--type",
+        "decision",
+        "--confidence",
+        "high",
+        env=env,
+    )
+    assert learned.returncode == 0, learned.stderr
+
+    server = _StdioServer(env=env)
+    try:
+        server.handshake()
+        assert _status(server)["nodes"] == 1
+    finally:
+        server.close()
+
+
+def test_serve_without_a_path_or_init_names_the_default_workspace(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+
+    result = _run_kairn("serve", env=_fake_home_env(home))
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert str((home / ".kairn" / "kairn.db").resolve()) in result.stderr
+    assert not (home / ".kairn").exists(), "plain serve must not create a store"
+
+
 def test_serve_init_keeps_an_existing_workspace(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     assert _run_kairn("init", str(workspace)).returncode == 0
