@@ -7,7 +7,10 @@ come up, would stay green. This test runs the command from `plugin/.mcp.json` wi
 an empty home and an empty uv cache, and calls `kn_status`.
 
 It downloads the pinned release from PyPI, so it only runs when
-KAIRN_PLUGIN_LAUNCH=1 (the `plugin` CI job sets it) and `uvx` is on PATH.
+KAIRN_PLUGIN_LAUNCH=1 (the `plugin` and `plugin launch (windows)` CI jobs set
+it). With that set, a missing `uvx` is a failure, not a skip: those jobs exist
+only to run this test, and a skip would let them pass without starting
+anything.
 Right after a version bump the release is not on PyPI yet; that state skips
 loudly, the same way the bundle's runtime smoke does. The release is published
 from the release PR's head before that PR merges, so the run on the merged
@@ -32,8 +35,8 @@ MCP_JSON = ROOT / "plugin" / ".mcp.json"
 TIMEOUT_S = 120
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("KAIRN_PLUGIN_LAUNCH") != "1" or shutil.which("uvx") is None,
-    reason="set KAIRN_PLUGIN_LAUNCH=1 with uvx on PATH to run (downloads from PyPI)",
+    os.environ.get("KAIRN_PLUGIN_LAUNCH") != "1",
+    reason="set KAIRN_PLUGIN_LAUNCH=1 to run (needs uvx, downloads from PyPI)",
 )
 
 
@@ -56,6 +59,8 @@ def _on_pypi(version: str) -> bool:
 
 def test_the_plugin_launch_line_starts_a_server_that_answers(tmp_path: Path) -> None:
     server = json.loads(MCP_JSON.read_text(encoding="utf-8"))["mcpServers"]["kairn"]
+    command = shutil.which(server["command"])
+    assert command, f"KAIRN_PLUGIN_LAUNCH=1 but {server['command']!r} is not on PATH"
     version = _pinned_version(server["args"])
     if not _on_pypi(version):
         pytest.skip(f"kairn-ai {version} is not on PyPI yet - skipped until published")
@@ -73,11 +78,13 @@ def test_the_plugin_launch_line_starts_a_server_that_answers(tmp_path: Path) -> 
         if name in os.environ:
             env[name] = os.environ[name]
     proc = subprocess.Popen(
-        [shutil.which(server["command"]), *server["args"]],
+        [command, *server["args"]],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
         env=env,
         cwd=home,
