@@ -21,8 +21,16 @@ Code with `MCP_TIMEOUT=120000` to raise the limit to 120 seconds.
 `MCP_TIMEOUT` is measured in milliseconds; see
 [Claude Code's MCP guide](https://code.claude.com/docs/en/mcp-quickstart).
 
-Apps started from the macOS Dock or a desktop launcher may not see the PATH
-your terminal uses, so `uvx` can be missing there while it works in a terminal.
+Desktop apps read PATH when they start. [Claude Desktop's Code tab](https://code.claude.com/docs/en/desktop)
+on macOS takes it from your shell profile; on Windows, from the user and system
+environment variables. After installing uv, quit and reopen the app. If a
+desktop app still cannot start the server, it does not see `uvx`. For Codex,
+remove the plugin with `codex plugin remove kairn@kairn`, find the full path
+with `command -v uvx` (macOS and Linux) or `where.exe uvx` (Windows), and add
+Kairn by hand with
+`codex mcp add kairn -- /full/path/to/uvx --from kairn-ai==0.3.0 kairn serve --init ~/.kairn`.
+Set `startup_timeout_sec = 120` under `[mcp_servers.kairn]` in
+`~/.codex/config.toml`, because the first start downloads the package.
 
 The local MCP server works in Claude Code, Cowork on your computer, Codex CLI,
 and Codex desktop. It does not load in claude.ai chat on the web.
