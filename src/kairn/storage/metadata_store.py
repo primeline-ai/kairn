@@ -9,6 +9,8 @@ from typing import Any
 
 import aiosqlite
 
+from kairn.storage._connect import open_connection
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,7 +25,7 @@ class MetadataStore:
     async def initialize(self) -> None:
         """Create database and apply schema."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = await aiosqlite.connect(str(self.db_path))
+        self._db = await open_connection(self.db_path)
         try:
             self._db.row_factory = aiosqlite.Row
 
