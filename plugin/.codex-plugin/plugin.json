@@ -14,6 +14,7 @@
     "longDescription": "Recall project knowledge before acting and save decisions and fixes to a local store in ~/.kairn. The client starts Kairn over stdio; saving and recalling need no LLM call.",
     "category": "Developer Tools",
     "websiteURL": "https://primeline.cc/system/kairn",
+    "privacyPolicyURL": "https://github.com/primeline-ai/kairn/blob/main/plugin/PRIVACY.md",
     "defaultPrompt": "Recall what is known about this project before making a decision."
   }
 }
