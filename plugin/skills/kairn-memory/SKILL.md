@@ -18,5 +18,6 @@ Use `kn_context(keywords="<topic>")` for related graph context,
 `kn_memories(text="<query>")` to search saved experiences, and `kn_status()`
 to inspect the store.
 
-Never save secrets, credentials, or personal data. Everything stays in
-`~/.kairn` on this machine.
+Never save secrets, credentials, or personal data. The store lives in
+`~/.kairn` on this machine; what you recall is sent to the model as part of
+the conversation.

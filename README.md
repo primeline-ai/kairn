@@ -64,7 +64,7 @@ Kairn is different:
 
 ### Claude Desktop
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS or `%APPDATA%\Claude\claude_desktop_config.json` on Windows:
 
 ```json
 {
@@ -380,6 +380,8 @@ nothing ever leaves your machine.
 
 ## Install as a plugin
 
+The plugin needs [uv](https://docs.astral.sh/uv/getting-started/installation/).
+
 Claude Code:
 
 ```bash
@@ -394,7 +396,9 @@ codex plugin marketplace add primeline-ai/kairn
 codex plugin add kairn@kairn
 ```
 
-See [the plugin README](plugin/README.md) for what it does and the `codex exec` approval note.
+If you already added Kairn with `claude mcp add kairn` or `codex mcp add kairn`, remove that entry first with `claude mcp remove kairn` or `codex mcp remove kairn`, or keep only one installation route, because both use the name `kairn`.
+
+See [the plugin README](https://github.com/primeline-ai/kairn/blob/main/plugin/README.md) for what it does and the `codex exec` approval note.
 
 ## Configuration
 
