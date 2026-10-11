@@ -1,0 +1,10 @@
+{
+  "name": "kairn",
+  "version": "0.3.0",
+  "description": "A local knowledge graph with full-text recall, started by the client over stdio, with no LLM call needed to save or recall.",
+  "author": {"name": "PrimeLine"},
+  "license": "MIT",
+  "homepage": "https://github.com/primeline-ai/kairn",
+  "repository": "https://github.com/primeline-ai/kairn",
+  "keywords": ["memory", "knowledge-graph", "full-text-search", "mcp"]
+}

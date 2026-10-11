@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "kairn": {
+      "command": "uvx",
+      "args": ["--from", "kairn-ai==0.3.0", "kairn", "serve", "--init", "~/.kairn"]
+    }
+  }
+}
