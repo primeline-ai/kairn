@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install mcp-publisher
         # This binary is handed an OIDC token that can publish under
@@ -77,6 +77,7 @@ jobs:
         # Publishing returning success is not the same as the entry being
         # readable, so this asks the public API rather than trusting the exit
         # code of the step above.
+        # Checks the exact version from server.json and reports isLatest without requiring it.
         #
         # Deliberately a WARNING and not a failure. The registry refuses a
         # duplicate version, so once Publish has succeeded there is no second
@@ -86,11 +87,15 @@ jobs:
         # already succeeded by this point; this step reports, it does not gate.
         if: always() && steps.publish.outcome == 'success'
         run: |
+          version=$(jq -r .version server.json)
+          url="https://registry.modelcontextprotocol.io/v0/servers/$(jq -rn --arg n "$(jq -r .name server.json)" '$n|@uri')/versions/$version"
           for i in 1 2 3 4 5 6; do
-            body=$(curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=kairn" || true)
-            if echo "$body" | grep -q 'io.github.primeline-ai/kairn'; then
-              echo "$body" | head -c 600; echo; echo "entry is live"; exit 0
+            body=$(curl -s --fail --max-time 20 "$url" || true)
+            if jq -e --arg v "$version" '.server.version == $v and ._meta["io.modelcontextprotocol.registry/official"].status == "active"' <<<"$body" >/dev/null; then
+              echo "version $version is live (isLatest: $(jq -r '._meta["io.modelcontextprotocol.registry/official"].isLatest' <<<"$body"))"
+              exit 0
             fi
-            echo "not visible yet, attempt $i"; sleep 10
+            echo "not live yet, attempt $i"
+            sleep 10
           done
-          echo "::warning::publish succeeded but the entry is not queryable yet - check https://registry.modelcontextprotocol.io/v0/servers?search=kairn before re-running, because a duplicate version is refused"
+          echo "::warning::publish succeeded but version $version is not live yet - check $url before re-running, because a duplicate version is refused"

@@ -82,10 +82,6 @@ class Config:
         if env_path:
             config.workspace_path = Path(env_path)
 
-        env_log = os.environ.get("KAIRN_LOG_LEVEL")
-        if env_log:
-            config.log_level = env_log
-
         # Load YAML config if exists
         config_file = config.workspace_path / "config.yaml"
         if config_file.exists():

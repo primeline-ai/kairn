@@ -29,8 +29,8 @@ TIMEOUT_S = 60
 
 
 def _env(**extra: str) -> dict[str, str]:
-    """The test's own environment, without a KAIRN_WORKSPACE leaking in from the shell."""
-    env = {k: v for k, v in os.environ.items() if k != "KAIRN_WORKSPACE"}
+    """The test's own environment, without KAIRN_* settings leaking in from the shell."""
+    env = {k: v for k, v in os.environ.items() if k not in ("KAIRN_WORKSPACE", "KAIRN_LOG_LEVEL")}
     env.update(extra)
     return env
 
@@ -73,11 +73,15 @@ class _StdioServer:
             self.stdout_lines.append(line)
             self._q.put(line)
 
-        for stream, sink in (
-            (self.proc.stdout, to_stdout),
-            (self.proc.stderr, self.stderr_lines.append),
-        ):
-            threading.Thread(target=_pump, args=(stream, sink), daemon=True).start()
+        self._readers = [
+            threading.Thread(target=_pump, args=(stream, sink), daemon=True)
+            for stream, sink in (
+                (self.proc.stdout, to_stdout),
+                (self.proc.stderr, self.stderr_lines.append),
+            )
+        ]
+        for reader in self._readers:
+            reader.start()
         self._next_id = 0
 
     def request(self, method: str, params: dict | None = None) -> dict:
@@ -127,6 +131,10 @@ class _StdioServer:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait(timeout=10)
+        # The process has exited, but its last lines may still be in the pipes.
+        # Callers read stdout_lines / stderr_lines next, so drain them first.
+        for reader in self._readers:
+            reader.join(timeout=10)
 
     def _send(self, payload: dict) -> None:
         assert self.proc.stdin is not None
@@ -274,3 +282,113 @@ def test_serve_init_failure_is_one_line_not_a_traceback(tmp_path: Path) -> None:
     assert "Traceback" not in result.stderr
     assert len([line for line in result.stderr.splitlines() if line.strip()]) == 1, result.stderr
     assert str(workspace.resolve()) in result.stderr
+
+
+
+def _stderr_after_learning(tmp_path: Path, env: dict[str, str], config: str | None) -> str:
+    workspace = tmp_path / "ws"
+    if config is not None:
+        workspace.mkdir()
+        (workspace / "config.yaml").write_text(config, encoding="utf-8")
+    server = _StdioServer("--init", str(workspace), env=env)
+    try:
+        server.handshake()
+        # A low-confidence learn is stored as an experience, which logs at INFO.
+        reply = server.request(
+            "tools/call",
+            {
+                "name": "kn_learn",
+                "arguments": {"content": "log level probe", "type": "gotcha", "confidence": "low"},
+            },
+        )
+        assert "error" not in reply, reply
+    finally:
+        server.close()
+    for line in server.stdout_lines:
+        if line.strip():
+            json.loads(line)  # log output must never reach the MCP transport
+    return "".join(server.stderr_lines)
+
+
+@pytest.mark.parametrize(
+    ("env_level", "config", "info_shown"),
+    [
+        (None, None, True),  # default INFO
+        ("WARNING", None, False),  # from the environment
+        (None, "log_level: warning\n", False),  # from config.yaml, any case
+        ("WARNING", "log_level: INFO\n", False),  # the environment wins over config.yaml
+        ("INFO", "log_level: WARNING\n", True),  # ... in both directions
+    ],
+)
+def test_serve_applies_the_log_level(
+    tmp_path: Path, env_level: str | None, config: str | None, info_shown: bool
+) -> None:
+    env = _env(KAIRN_LOG_LEVEL=env_level) if env_level else _env()
+    stderr = _stderr_after_learning(tmp_path, env, config)
+    assert ("Created experience" in stderr) is info_shown, stderr
+
+
+def _assert_one_line_failure(result: subprocess.CompletedProcess[str]) -> str:
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "Traceback" not in result.stderr
+    lines = [line for line in result.stderr.splitlines() if line.strip()]
+    assert len(lines) == 1, result.stderr
+    return lines[0]
+
+
+@pytest.mark.parametrize("level", ["LOUD", "NOTSET"])
+def test_serve_rejects_an_unknown_log_level_before_creating_anything(
+    tmp_path: Path, level: str
+) -> None:
+    workspace = tmp_path / "ws"
+    result = _run_kairn("serve", "--init", str(workspace), env=_env(KAIRN_LOG_LEVEL=level))
+    line = _assert_one_line_failure(result)
+    assert "log_level" in line and level in line, line
+    assert not workspace.exists(), "a rejected start must not leave a workspace behind"
+
+
+def test_serve_reports_a_broken_config_in_one_line(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "config.yaml").write_text("pagination_default:\n", encoding="utf-8")
+    line = _assert_one_line_failure(_run_kairn("serve", "--init", str(workspace)))
+    assert str(workspace.resolve()) in line, line
+
+
+def test_serve_names_the_folder_config_was_read_from(tmp_path: Path) -> None:
+    served, settings = tmp_path / "served", tmp_path / "settings"
+    settings.mkdir()
+    (settings / "config.yaml").write_text("pagination_default:\n", encoding="utf-8")
+    result = _run_kairn("serve", "--init", str(served), env=_env(KAIRN_WORKSPACE=str(settings)))
+    line = _assert_one_line_failure(result)
+    assert str(settings.resolve()) in line, line
+
+
+def test_logging_setup_does_not_stack_handlers() -> None:
+    import logging
+
+    from kairn.cli import _configure_logging
+
+    logger = logging.getLogger("kairn")
+    before = (list(logger.handlers), logger.level, logger.propagate)
+    try:
+        _configure_logging(logging.INFO)
+        _configure_logging(logging.WARNING)
+        added = [h for h in logger.handlers if h not in before[0]]
+        assert len(added) == 1, added
+        assert logger.level == logging.WARNING
+    finally:
+        logger.handlers[:] = before[0]
+        logger.setLevel(before[1])
+        logger.propagate = before[2]
+
+
+def test_init_does_not_write_kairn_log_level_into_config(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    config = workspace / "config.yaml"
+    config.write_text("log_level: WARNING\n", encoding="utf-8")
+    result = _run_kairn("init", str(workspace), env=_env(KAIRN_LOG_LEVEL="DEBUG"))
+    assert result.returncode == 0, result.stderr
+    assert "log_level: WARNING" in config.read_text(encoding="utf-8")
