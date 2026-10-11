@@ -167,15 +167,16 @@ def serve(path: str, transport: str, init_workspace: bool) -> None:
         config = Config.load(workspace)
     except (OSError, yaml.YAMLError, ValueError, TypeError, AttributeError) as exc:
         env_path = os.environ.get("KAIRN_WORKSPACE")
-        folder = Path(env_path).expanduser().resolve() if env_path else workspace
+        folder = Path(env_path).resolve() if env_path else workspace
         message = f"Error: Could not read config in {folder}: {exc}"
         click.echo(" ".join(message.splitlines()), err=True)
         sys.exit(1)
 
-    name = str(config.log_level).strip().upper()
+    configured_level = os.environ.get("KAIRN_LOG_LEVEL") or config.log_level
+    name = str(configured_level).strip().upper()
     if name not in _LOG_LEVELS:
         click.echo(
-            f"Error: Unknown log_level {config.log_level!r}; "
+            f"Error: Unknown log_level {configured_level!r}; "
             "use DEBUG, INFO, WARNING, ERROR or CRITICAL.",
             err=True,
         )

@@ -97,10 +97,6 @@ class Config:
                     else:
                         setattr(config, key, expected_type(value))
 
-        env_log = os.environ.get("KAIRN_LOG_LEVEL")
-        if env_log:
-            config.log_level = env_log
-
         return config
 
     @property
