@@ -383,6 +383,7 @@ nothing ever leaves your machine.
 ```bash
 KAIRN_WORKSPACE=~/brain               # Folder Kairn reads config.yaml from, and where 'kairn workspace' keeps team data; 'kairn serve <path>' still opens the store at <path>
 KAIRN_JWT_SECRET=<your-secret>        # Required for team features
+KAIRN_LOG_LEVEL=WARNING               # Level of Kairn's log lines on stderr (DEBUG, INFO, WARNING, ERROR); default INFO; log_level in config.yaml wins
 ```
 
 Settings live in `<workspace>/config.yaml`; `kairn init` writes it and `serve --init` does not, so create it by hand if you started with `serve --init`. Without it the defaults apply. Semantic recall is opt-in and off by default. It reranks recall with embeddings from a local Ollama server, so stored content never leaves your machine.

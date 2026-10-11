@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install mcp-publisher
         # This binary is handed an OIDC token that can publish under
@@ -77,6 +77,7 @@ jobs:
         # Publishing returning success is not the same as the entry being
         # readable, so this asks the public API rather than trusting the exit
         # code of the step above.
+        # It now checks that the published version is live and latest.
         #
         # Deliberately a WARNING and not a failure. The registry refuses a
         # duplicate version, so once Publish has succeeded there is no second
@@ -86,11 +87,30 @@ jobs:
         # already succeeded by this point; this step reports, it does not gate.
         if: always() && steps.publish.outcome == 'success'
         run: |
+          name=$(python3 -c "import json;print(json.load(open('server.json'))['name'])")
+          version=$(python3 -c "import json;print(json.load(open('server.json'))['version'])")
+          encoded_name=$(python3 -c "import sys;from urllib.parse import quote;print(quote(sys.argv[1], safe=''))" "$name")
+          url="https://registry.modelcontextprotocol.io/v0/servers/$encoded_name/versions/$version"
           for i in 1 2 3 4 5 6; do
-            body=$(curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=kairn" || true)
-            if echo "$body" | grep -q 'io.github.primeline-ai/kairn'; then
-              echo "$body" | head -c 600; echo; echo "entry is live"; exit 0
+            body=$(curl -s --fail "$url" || true)
+            if python3 - "$version" "$body" <<'PY'
+          import json
+          import sys
+
+          try:
+              response = json.loads(sys.argv[2])
+              live = (
+                  response["server"]["version"] == sys.argv[1]
+                  and response["_meta"]["io.modelcontextprotocol.registry/official"]["isLatest"] is True
+              )
+          except (ValueError, KeyError, TypeError):
+              live = False
+          sys.exit(0 if live else 1)
+          PY
+            then
+              echo "version $version is live and latest"; exit 0
             fi
-            echo "not visible yet, attempt $i"; sleep 10
+            echo "not live and latest yet, attempt $i"
+            if [ "$i" -lt 6 ]; then sleep 10; fi
           done
-          echo "::warning::publish succeeded but the entry is not queryable yet - check https://registry.modelcontextprotocol.io/v0/servers?search=kairn before re-running, because a duplicate version is refused"
+          echo "::warning::publish succeeded but version $version is not live and latest yet - check $url before re-running, because a duplicate version is refused"

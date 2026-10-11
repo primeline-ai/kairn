@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shlex
 import sqlite3
@@ -163,6 +164,29 @@ def serve(path: str, transport: str, init_workspace: bool) -> None:
             message = f"Error: Could not create workspace at {workspace}: {exc}"
             click.echo(" ".join(message.splitlines()), err=True)
             sys.exit(1)
+
+    try:
+        config = Config.load(workspace)
+    except (OSError, yaml.YAMLError, ValueError) as exc:
+        message = f"Error: Could not read config in {workspace}: {exc}"
+        click.echo(" ".join(message.splitlines()), err=True)
+        sys.exit(1)
+
+    level = logging.getLevelName(str(config.log_level).strip().upper())
+    if not isinstance(level, int):
+        click.echo(
+            f"Error: Unknown log_level {config.log_level!r}; "
+            "use DEBUG, INFO, WARNING, ERROR or CRITICAL.",
+            err=True,
+        )
+        sys.exit(1)
+
+    logger = logging.getLogger("kairn")
+    logger.setLevel(level)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(handler)
+    logger.propagate = False
 
     from kairn.server import create_server
 

@@ -6,7 +6,6 @@ import pytest_asyncio
 
 import kairn.core.experience as experience_module
 import kairn.core.intelligence as intelligence_module
-
 from kairn.core.experience import ExperienceEngine
 from kairn.core.graph import GraphEngine
 from kairn.core.ideas import IdeaEngine
