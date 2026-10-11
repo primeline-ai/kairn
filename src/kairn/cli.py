@@ -52,6 +52,21 @@ from kairn.relevance import RELEVANCE_KIND_RECENCY
 from kairn.storage.metadata_store import MetadataStore
 from kairn.storage.sqlite_store import SQLiteStore
 
+_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+def _configure_logging(level: int) -> None:
+    logger = logging.getLogger("kairn")
+    for handler in list(logger.handlers):
+        if getattr(handler, "_kairn_cli", False):
+            logger.removeHandler(handler)
+    handler = logging.StreamHandler(sys.stderr)
+    handler._kairn_cli = True
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(level)
+    logger.propagate = False
+
 
 def _validate_experience_min_match(value: object) -> float:
     """Range-check the ``experience_min_match`` config key, loudly.
@@ -148,6 +163,25 @@ def serve(path: str, transport: str, init_workspace: bool) -> None:
     workspace = Path(path).expanduser().resolve()
     db_path = workspace / "kairn.db"
 
+    try:
+        config = Config.load(workspace)
+    except (OSError, yaml.YAMLError, ValueError, TypeError, AttributeError) as exc:
+        env_path = os.environ.get("KAIRN_WORKSPACE")
+        folder = Path(env_path).expanduser().resolve() if env_path else workspace
+        message = f"Error: Could not read config in {folder}: {exc}"
+        click.echo(" ".join(message.splitlines()), err=True)
+        sys.exit(1)
+
+    name = str(config.log_level).strip().upper()
+    if name not in _LOG_LEVELS:
+        click.echo(
+            f"Error: Unknown log_level {config.log_level!r}; "
+            "use DEBUG, INFO, WARNING, ERROR or CRITICAL.",
+            err=True,
+        )
+        sys.exit(1)
+    _configure_logging(getattr(logging, name))
+
     if not db_path.exists():
         if not init_workspace:
             quoted_workspace = shlex.quote(str(workspace))
@@ -164,29 +198,6 @@ def serve(path: str, transport: str, init_workspace: bool) -> None:
             message = f"Error: Could not create workspace at {workspace}: {exc}"
             click.echo(" ".join(message.splitlines()), err=True)
             sys.exit(1)
-
-    try:
-        config = Config.load(workspace)
-    except (OSError, yaml.YAMLError, ValueError) as exc:
-        message = f"Error: Could not read config in {workspace}: {exc}"
-        click.echo(" ".join(message.splitlines()), err=True)
-        sys.exit(1)
-
-    level = logging.getLevelName(str(config.log_level).strip().upper())
-    if not isinstance(level, int):
-        click.echo(
-            f"Error: Unknown log_level {config.log_level!r}; "
-            "use DEBUG, INFO, WARNING, ERROR or CRITICAL.",
-            err=True,
-        )
-        sys.exit(1)
-
-    logger = logging.getLogger("kairn")
-    logger.setLevel(level)
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
-    logger.addHandler(handler)
-    logger.propagate = False
 
     from kairn.server import create_server
 

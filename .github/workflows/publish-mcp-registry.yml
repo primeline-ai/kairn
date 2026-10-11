@@ -77,7 +77,7 @@ jobs:
         # Publishing returning success is not the same as the entry being
         # readable, so this asks the public API rather than trusting the exit
         # code of the step above.
-        # It now checks that the published version is live and latest.
+        # Checks the exact version from server.json and reports isLatest without requiring it.
         #
         # Deliberately a WARNING and not a failure. The registry refuses a
         # duplicate version, so once Publish has succeeded there is no second
@@ -87,30 +87,15 @@ jobs:
         # already succeeded by this point; this step reports, it does not gate.
         if: always() && steps.publish.outcome == 'success'
         run: |
-          name=$(python3 -c "import json;print(json.load(open('server.json'))['name'])")
-          version=$(python3 -c "import json;print(json.load(open('server.json'))['version'])")
-          encoded_name=$(python3 -c "import sys;from urllib.parse import quote;print(quote(sys.argv[1], safe=''))" "$name")
-          url="https://registry.modelcontextprotocol.io/v0/servers/$encoded_name/versions/$version"
+          version=$(jq -r .version server.json)
+          url="https://registry.modelcontextprotocol.io/v0/servers/$(jq -rn --arg n "$(jq -r .name server.json)" '$n|@uri')/versions/$version"
           for i in 1 2 3 4 5 6; do
-            body=$(curl -s --fail "$url" || true)
-            if python3 - "$version" "$body" <<'PY'
-          import json
-          import sys
-
-          try:
-              response = json.loads(sys.argv[2])
-              live = (
-                  response["server"]["version"] == sys.argv[1]
-                  and response["_meta"]["io.modelcontextprotocol.registry/official"]["isLatest"] is True
-              )
-          except (ValueError, KeyError, TypeError):
-              live = False
-          sys.exit(0 if live else 1)
-          PY
-            then
-              echo "version $version is live and latest"; exit 0
+            body=$(curl -s --fail --max-time 20 "$url" || true)
+            if jq -e --arg v "$version" '.server.version == $v and ._meta["io.modelcontextprotocol.registry/official"].status == "active"' <<<"$body" >/dev/null; then
+              echo "version $version is live (isLatest: $(jq -r '._meta["io.modelcontextprotocol.registry/official"].isLatest' <<<"$body"))"
+              exit 0
             fi
-            echo "not live and latest yet, attempt $i"
-            if [ "$i" -lt 6 ]; then sleep 10; fi
+            echo "not live yet, attempt $i"
+            sleep 10
           done
-          echo "::warning::publish succeeded but version $version is not live and latest yet - check $url before re-running, because a duplicate version is refused"
+          echo "::warning::publish succeeded but version $version is not live yet - check $url before re-running, because a duplicate version is refused"
