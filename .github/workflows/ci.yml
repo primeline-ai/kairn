@@ -168,12 +168,32 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
+      - name: Install the Claude Code CLI
+        # Pinned so a CLI release cannot change what passes here with no commit
+        # in this repo. A global install with the package's install script
+        # allowed: the npm package is a placeholder until that script puts the
+        # native binary in place, and npx or a blocked script leaves the
+        # placeholder, which only prints "claude native binary not installed".
+        run: npm install -g --allow-scripts=@anthropic-ai/claude-code "@anthropic-ai/claude-code@2.1.296"
       - name: Validate the plugin and the marketplace
-        # Pinned so a validator release cannot change what passes here with no
-        # commit in this repo. --strict turns warnings into failures.
+        # --strict turns warnings into failures. No login is needed.
         env:
           CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
         run: |
-          mkdir -p "$CLAUDE_CONFIG_DIR"
-          npx -y "@anthropic-ai/claude-code@2.1.296" plugin validate --strict ./plugin
-          npx -y "@anthropic-ai/claude-code@2.1.296" plugin validate --strict .
+          claude --version
+          claude plugin validate --strict ./plugin
+          claude plugin validate --strict .
+      - name: Install from this checkout and check what loads
+        # validate checks the shape of the manifests, not what loads: a field
+        # can pass --strict and contribute nothing. Installing from this repo as
+        # a marketplace and reading `plugin details` shows that the skill and
+        # the MCP server are actually picked up.
+        env:
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
+        run: |
+          claude plugin marketplace add "$GITHUB_WORKSPACE"
+          claude plugin install kairn@kairn
+          details=$(claude plugin details kairn)
+          echo "$details"
+          grep -Eq 'Skills \(1\) +kairn-memory' <<<"$details" || { echo "::error::skill kairn-memory did not load"; exit 1; }
+          grep -Eq 'MCP servers \(1\) +kairn' <<<"$details" || { echo "::error::MCP server kairn did not load"; exit 1; }
