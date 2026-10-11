@@ -4,7 +4,7 @@
   "description": "A local knowledge graph with full-text recall, started by the client over stdio, with no LLM call needed to save or recall.",
   "author": {"name": "PrimeLine"},
   "license": "MIT",
-  "homepage": "https://github.com/primeline-ai/kairn",
+  "homepage": "https://primeline.cc/system/kairn",
   "repository": "https://github.com/primeline-ai/kairn",
   "keywords": ["memory", "knowledge-graph", "full-text-search", "mcp"],
   "mcpServers": "./.mcp.codex.json",
@@ -13,6 +13,7 @@
     "shortDescription": "Local knowledge graph memory with full-text recall.",
     "longDescription": "Recall project knowledge before acting and save decisions and fixes to a local store in ~/.kairn. The client starts Kairn over stdio; saving and recalling need no LLM call.",
     "category": "Developer Tools",
+    "websiteURL": "https://primeline.cc/system/kairn",
     "defaultPrompt": "Recall what is known about this project before making a decision."
   }
 }

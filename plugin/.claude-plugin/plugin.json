@@ -5,7 +5,9 @@
   "author": {"name": "PrimeLine"},
   "license": "MIT",
   "icon": "./.claude-plugin/icon.png",
-  "homepage": "https://github.com/primeline-ai/kairn",
+  "homepage": "https://primeline.cc/system/kairn",
   "repository": "https://github.com/primeline-ai/kairn",
+  "documentationUrl": "https://github.com/primeline-ai/kairn/blob/main/plugin/README.md",
+  "supportUrl": "https://github.com/primeline-ai/kairn/issues",
   "keywords": ["memory", "knowledge-graph", "full-text-search", "mcp"]
 }
