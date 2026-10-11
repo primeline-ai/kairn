@@ -21,7 +21,13 @@ MAX_FILE_BYTES = 256 * 1024
 # store. Any other 8-hex id in the README or the plugin is treated as a leak.
 README_DEMO_IDS = {"002d9c22", "d0710c2f"}
 NODE_ID = re.compile(r"(?<![0-9a-fA-F-])[0-9a-f]{8}(?![0-9a-fA-F-])")
-PRIVATE_MARKERS = ("kairn.primeline.cc", "/Users/")
+# Patterns, not names: a test that spelled out a private host would publish it.
+# Any subdomain of the project domain (the public site itself is the bare
+# domain), and home folders on macOS, Linux and Windows.
+PRIVATE_PATTERNS = (
+    re.compile(r"\b[a-z0-9-]+\.primeline\.cc\b", re.IGNORECASE),
+    re.compile(r"/Users/|/home/|[A-Za-z]:\\+Users\\", re.IGNORECASE),
+)
 
 
 def _version() -> str:
@@ -102,8 +108,9 @@ def test_no_private_data_in_plugin_or_readme() -> None:
     for path in _privacy_targets():
         text = path.read_text(encoding="utf-8")
         rel = path.relative_to(ROOT)
-        for marker in PRIVATE_MARKERS:
-            assert marker not in text, f"{rel} contains {marker!r}"
+        for pattern in PRIVATE_PATTERNS:
+            found = pattern.search(text)
+            assert not found, f"{rel} contains {found.group(0)!r}"
         allowed = README_DEMO_IDS if path == ROOT / "README.md" else set()
         ids = set(NODE_ID.findall(text)) - allowed
         assert not ids, f"{rel} contains what look like Kairn node ids: {sorted(ids)}"
