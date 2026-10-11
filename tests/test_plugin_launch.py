@@ -69,7 +69,7 @@ def test_the_plugin_launch_line_starts_a_server_that_answers(tmp_path: Path) -> 
         "UV_CACHE_DIR": str(tmp_path / "uv-cache"),
     }
     # Windows needs these in a child process environment.
-    for name in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP"):
+    for name in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATHEXT", "COMSPEC"):
         if name in os.environ:
             env[name] = os.environ[name]
     proc = subprocess.Popen(
