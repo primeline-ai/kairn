@@ -63,22 +63,40 @@ or skip the plugin.
 
 ## Non-interactive Codex
 
-For non-interactive `codex exec`, enable the server in your Codex `config.toml`
-and use per-tool approval to approve only the tools you want headless runs to
-use. For example, approve `kn_recall` for reading and `kn_learn` for saving:
+Non-interactive `codex exec` does not ask for approval, so plugin tools need
+approval in `config.toml` first. Enable the server and use per-tool approval
+for the tools the run needs. This example approves all five tools named by
+the bundled kairn-memory skill: `kn_recall`, `kn_context`, `kn_memories` and
+`kn_status` for reading, and `kn_learn` for saving:
 
 ```toml
 [plugins."kairn@kairn".mcp_servers.kairn]
 enabled = true
 
-[plugins."kairn@kairn".mcp_servers.kairn.tools.kn_learn]
+[plugins."kairn@kairn".mcp_servers.kairn.tools.kn_recall]
 approval_mode = "approve"
 
-[plugins."kairn@kairn".mcp_servers.kairn.tools.kn_recall]
+[plugins."kairn@kairn".mcp_servers.kairn.tools.kn_context]
+approval_mode = "approve"
+
+[plugins."kairn@kairn".mcp_servers.kairn.tools.kn_memories]
+approval_mode = "approve"
+
+[plugins."kairn@kairn".mcp_servers.kairn.tools.kn_status]
+approval_mode = "approve"
+
+[plugins."kairn@kairn".mcp_servers.kairn.tools.kn_learn]
 approval_mode = "approve"
 ```
 
-Repeat the per-tool table for each tool you want to approve.
+With per-tool approval tables for the tools a run needs, `codex exec` calls
+them. A tool without its own table falls back to the server's default approval.
+With no approval configured, `codex exec` refuses plugin tools with
+`MCP tool call requires approval, but approval policy is never`.
+Tools that write or delete knowledge, such as `kn_remove` and `kn_prune`,
+stay refused when left out of this list and the server default does not
+approve them.
+
 As a shorter alternative, approve the entire server:
 
 ```toml
