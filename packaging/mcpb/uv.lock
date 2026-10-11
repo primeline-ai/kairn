@@ -626,7 +626,7 @@ wheels = [
 
 [[package]]
 name = "kairn-ai"
-version = "0.3.0"
+version = "0.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
@@ -636,21 +636,21 @@ dependencies = [
     { name = "pyyaml" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/91/20/bd624348ac15a45aac24ad75b8361ec169fce790715c82f0184896898de1/kairn_ai-0.3.0.tar.gz", hash = "sha256:e5804cc17b77eda966ad1fadcd15b100b644c35eec3370a10b4bbf6b9fa20fa6", size = 1574496, upload-time = "2026-10-10T22:50:54.234Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/70/0990b68bf82f44c54d18a42338efa5dbc9b9c16e30d30362549602c1e0d1/kairn_ai-0.3.1.tar.gz", hash = "sha256:eab23968311bc69e0091af2f9e217bf07daffc09642655982de39d6e2f397688", size = 1588504, upload-time = "2026-10-11T13:41:47.39Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/55/2a/99300b3b456eefe161b794876c4dcb474e24a07637960881b2ecda9da757/kairn_ai-0.3.0-py3-none-any.whl", hash = "sha256:834535ebbb7dd8ec460757f8b5694a8828c6bf368fa3d04c0bf2065b02b77744", size = 147129, upload-time = "2026-10-10T22:50:52.303Z" },
+    { url = "https://files.pythonhosted.org/packages/53/3e/8a95250e0df512f7427be8b85e4f44d4c20b329dae765c4f50724c808294/kairn_ai-0.3.1-py3-none-any.whl", hash = "sha256:e2a46f97da4812568b0ab73f7f35bc09d3c8bcefbfd523d9e4db1d5b87251608", size = 148597, upload-time = "2026-10-11T13:41:45.777Z" },
 ]
 
 [[package]]
 name = "kairn-mcpb"
-version = "0.3.0"
+version = "0.3.1"
 source = { virtual = "." }
 dependencies = [
     { name = "kairn-ai" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "kairn-ai", specifier = "==0.3.0" }]
+requires-dist = [{ name = "kairn-ai", specifier = "==0.3.1" }]
 
 [[package]]
 name = "keyring"
