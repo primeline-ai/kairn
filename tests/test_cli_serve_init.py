@@ -73,11 +73,15 @@ class _StdioServer:
             self.stdout_lines.append(line)
             self._q.put(line)
 
-        for stream, sink in (
-            (self.proc.stdout, to_stdout),
-            (self.proc.stderr, self.stderr_lines.append),
-        ):
-            threading.Thread(target=_pump, args=(stream, sink), daemon=True).start()
+        self._readers = [
+            threading.Thread(target=_pump, args=(stream, sink), daemon=True)
+            for stream, sink in (
+                (self.proc.stdout, to_stdout),
+                (self.proc.stderr, self.stderr_lines.append),
+            )
+        ]
+        for reader in self._readers:
+            reader.start()
         self._next_id = 0
 
     def request(self, method: str, params: dict | None = None) -> dict:
@@ -127,6 +131,10 @@ class _StdioServer:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait(timeout=10)
+        # The process has exited, but its last lines may still be in the pipes.
+        # Callers read stdout_lines / stderr_lines next, so drain them first.
+        for reader in self._readers:
+            reader.join(timeout=10)
 
     def _send(self, payload: dict) -> None:
         assert self.proc.stdin is not None
@@ -374,3 +382,13 @@ def test_logging_setup_does_not_stack_handlers() -> None:
         logger.handlers[:] = before[0]
         logger.setLevel(before[1])
         logger.propagate = before[2]
+
+
+def test_init_does_not_write_kairn_log_level_into_config(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    config = workspace / "config.yaml"
+    config.write_text("log_level: WARNING\n", encoding="utf-8")
+    result = _run_kairn("init", str(workspace), env=_env(KAIRN_LOG_LEVEL="DEBUG"))
+    assert result.returncode == 0, result.stderr
+    assert "log_level: WARNING" in config.read_text(encoding="utf-8")
