@@ -90,6 +90,21 @@ def test_server_starts_with_init_and_names_no_path(mcp_file: str) -> None:
         assert not any(mark in arg for mark in ("/", "\\", "~", "$")), arg
 
 
+
+def test_listing_links_are_https_and_agree_across_manifests() -> None:
+    # The directory reads documentationUrl and supportUrl from plugin.json;
+    # without documentationUrl it takes the README's first link instead.
+    claude = _json(PLUGIN / ".claude-plugin" / "plugin.json")
+    codex = _json(PLUGIN / ".codex-plugin" / "plugin.json")
+    for field in ("homepage", "documentationUrl", "supportUrl", "repository"):
+        assert claude[field].startswith("https://"), (field, claude[field])
+    assert claude["homepage"].rstrip("/") != claude["repository"].rstrip("/"), "homepage is the repo"
+    assert claude["supportUrl"].startswith(claude["repository"].rstrip("/") + "/"), claude["supportUrl"]
+    # Codex lists the website from interface.websiteURL; keep both manifests on one homepage.
+    assert codex["homepage"] == claude["homepage"]
+    assert codex["interface"]["websiteURL"] == claude["homepage"]
+    assert codex["repository"] == claude["repository"]
+
 def test_plugin_folder_hygiene() -> None:
     files = _plugin_files()
     assert files
