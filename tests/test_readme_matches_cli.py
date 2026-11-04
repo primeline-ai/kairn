@@ -18,6 +18,7 @@ import click
 import pytest
 
 from kairn.cli import main
+from kairn.models.experience import VALID_TYPES
 from kairn.relevance import RELEVANCE_KINDS
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -103,13 +104,13 @@ def test_every_command_is_listed(command_path: str) -> None:
 
 @pytest.mark.parametrize("command_path", sorted(LEAVES))
 def test_required_flags_and_arguments_are_shown(command_path: str) -> None:
-    shown = " ".join(_lines_for(command_path))
+    shown = " ".join(line.split("  #")[0] for line in _lines_for(command_path))
     for param in LEAVES[command_path].params:
         if not param.required:
             continue
         if isinstance(param, click.Option):
             flag = max(param.opts, key=len)
-            assert flag in shown, f"{command_path} needs {flag}, the README does not show it"
+            assert flag in shown.split(), f"{command_path} needs {flag}, the README does not show it"
         else:
             name = f"<{param.name}"
             assert name in shown and f"[{name}" not in shown, (
@@ -117,12 +118,15 @@ def test_required_flags_and_arguments_are_shown(command_path: str) -> None:
             )
 
 
-def test_every_listed_command_exists() -> None:
+def test_every_listed_command_and_flag_exists() -> None:
     for line in _cli_lines():
-        words = line.split()
-        assert any(
-            words[: len(path.split())] == path.split() for path in LEAVES
-        ), f"the README lists a command that does not exist: {line}"
+        words = line.split("#")[0].split()
+        matches = [path for path in LEAVES if words[: len(path.split())] == path.split()]
+        assert matches, f"the README lists a command that does not exist: {line}"
+        known = {opt for param in LEAVES[matches[0]].params for opt in param.opts}
+        for word in words:
+            if word.startswith("-"):
+                assert word in known, f"the README lists a flag that does not exist: {line}"
 
 
 def test_the_lines_a_new_reader_needs_are_exact() -> None:
@@ -131,7 +135,7 @@ def test_the_lines_a_new_reader_needs_are_exact() -> None:
     assert any(line.startswith("kairn serve --init") for line in lines)
     assert any(line.startswith("kairn recall <path> --topic") for line in lines)
     learn = next(line for line in lines if line.startswith("kairn learn "))
-    for kind in ("decision", "pattern", "solution", "workaround", "gotcha", "preference"):
+    for kind in VALID_TYPES:
         assert kind in learn, f"the learn line does not name the type {kind}"
 
 
@@ -161,11 +165,8 @@ def test_the_recall_example_matches_a_real_run(tmp_path: Path) -> None:
     assert [row["source"] for row in example] == [row["source"] for row in real]
     for shown, measured in zip(example, real, strict=True):
         assert set(shown) == set(measured), f"fields differ for {shown['source']}"
-        assert shown["relevance_kind"] == measured["relevance_kind"]
-        # One stored fact: the score sits at or near SQLite's floor. Not an exact
-        # number, because the experience row can round to 0.0 or to 1e-06.
-        assert shown["relevance"] < 0.01
-        assert measured["relevance"] < 0.01
+        for field in set(shown) - {"id"}:
+            assert shown[field] == measured[field], f"{shown['source']} field {field} differs"
 
 
 def test_every_relevance_kind_is_explained() -> None:
@@ -179,6 +180,33 @@ def test_the_small_store_score_is_explained() -> None:
     paragraph = README.split("**Read `relevance_kind`", 1)[1].split("\n\n", 1)[0]
     assert "1e-06" in paragraph
     assert "SQLite" in paragraph
+    assert "0.0" in paragraph, "a topic with a word the fact lacks scores 0.0; say so"
+
+
+FACT = "we chose Postgres over SQLite for the analytics service because we needed concurrent writers"
+TOPIC = "postgres analytics concurrent"
+
+
+def _recall(workspace: Path, *extra: str, topic: str = TOPIC) -> dict[str, dict]:
+    out = _ok("recall", str(workspace), "--topic", topic, *extra)
+    return {row["source"]: row for row in json.loads(out)["results"]}
+
+
+def test_the_small_store_claims_hold(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    _ok("learn", str(workspace), "--content", FACT, "--type", "decision")
+
+    assert set(_recall(workspace, "--min-relevance", "0.1")) == {"experience"}
+    partial = _recall(workspace, topic="postgres analytics kubernetes")
+    assert partial["node"]["relevance"] == 0.0
+    assert partial["experience"]["relevance"] == 0.0
+
+    for number in range(8):
+        _ok("learn", str(workspace), "--content", f"unrelated note {number} about backups",
+            "--type", "pattern")
+    grown = _recall(workspace)
+    assert grown["node"]["relevance"] > 0.3
+    assert grown["experience"]["relevance"] > 0.3
 
 
 # --- benchmark and demo stay out of the reader's real workspace --------------
@@ -204,6 +232,7 @@ def test_benchmark_leaves_a_named_workspace_untouched(tmp_path: Path) -> None:
     assert _ok("status", str(workspace)) == before_status
     assert "Insert" in out
     assert "temporary" in _flat(out).lower()
+    assert "Legacy relation" not in out + _run("benchmark", "--nodes", "2").stderr
 
 
 def test_benchmark_needs_no_workspace_and_removes_its_own(tmp_path: Path) -> None:
@@ -222,6 +251,49 @@ def test_benchmark_does_not_create_a_named_folder_that_is_missing(tmp_path: Path
     missing = tmp_path / "not-a-workspace"
     _ok("benchmark", str(missing), "--nodes", "20")
     assert not missing.exists()
+
+
+def test_benchmark_refuses_a_node_count_below_one() -> None:
+    for bad in ("0", "-5"):
+        assert _run("benchmark", "--nodes", bad).returncode != 0
+
+
+def test_benchmark_says_so_when_it_cannot_remove_its_folder(tmp_path: Path, monkeypatch) -> None:
+    """TemporaryDirectory can swallow a failed removal, so check the folder itself."""
+    from click.testing import CliRunner
+
+    leftover = tmp_path / "leftover"
+
+    class NotRemoved:
+        def __enter__(self) -> str:
+            leftover.mkdir()
+            return str(leftover)
+
+        def __exit__(self, *exc) -> None:
+            return None
+
+    monkeypatch.setattr("tempfile.TemporaryDirectory", lambda **kwargs: NotRemoved())
+    result = CliRunner().invoke(main, ["benchmark", "--nodes", "2"])
+    assert "removed" not in result.stdout.lower().replace("not removed", "")
+    assert str(leftover) in _flat(result.output).replace(" ", "") or leftover.name in result.output
+
+
+def test_benchmark_line_does_not_advertise_the_unused_path() -> None:
+    assert "<path>" not in " ".join(_lines_for("kairn benchmark")).split("#")[0]
+
+
+def test_the_team_workspace_commands_say_they_are_separate() -> None:
+    lines = _lines_for("kairn workspace create")
+    assert lines and "~/.kairn" in lines[0], "create writes under ~/.kairn, not to a <path>"
+    assert "KAIRN_JWT_SECRET" in _lines_for("kairn workspace join")[0]
+
+
+def test_the_demo_count_in_the_readme_is_true(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    _ok("demo", str(workspace))
+    status = json.loads(_ok("status", str(workspace)))
+    assert (status["nodes"], status["edges"], status["experiences"]) == (2, 1, 2)
+    assert "two nodes, one edge and two experiences" in README
 
 
 def test_docs_do_not_point_benchmark_or_demo_at_the_real_workspace() -> None:
