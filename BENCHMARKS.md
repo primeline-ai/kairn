@@ -143,8 +143,8 @@ public library directly (`ExperienceEngine.search`, the same call
    untouched (verify by hashing the DB file before and after).
 
 The performance half ships with Kairn itself: `kairn benchmark`
-measures insert, FTS5 query, and graph traversal latency at scale on your own
-machine. It does not run LongMemEval.
+measures insert, FTS5 query, and graph traversal latency on your own machine,
+on a fresh store in a temporary folder. It does not run LongMemEval.
 
 ## Bi-Temporal Level-Up: findings (2026-06-13)
 

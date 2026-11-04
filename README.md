@@ -155,7 +155,7 @@ Start a **new** session and ask it to recall the same thing - that calls `kn_rec
 
 `kn_learn` stored both a permanent graph node and a decaying experience (high confidence does both, see [Confidence routing](https://github.com/primeline-ai/kairn/blob/v0.3.1/README.md#decay-model)); `kn_recall` found both from a three-word topic.
 
-**Read `relevance_kind` before you read `relevance`.** `match` is lexical match strength (bm25). `match_recency` is match strength with a small recency nudge, a factor between 0.9 and 1.1, on an experience found by a text search. `recency` is pure time-decay on an experience listed with no search text: it says how old the row is, not whether it matched. `similarity` is embedding cosine on the semantic-recall path, and `unscored` marks a row the surface had no ranking for and filled in with a constant, from crossref or a text-less browse query. Both rows above show `1e-06` because SQLite's bm25 gives almost no weight to a word that appears in most entries. On a store with one fact every word does, so the score sits at SQLite's floor. It is not a bad match. After eight more unrelated facts, the same recall measured 0.55 for the node and 0.53 for the experience. Scores are only comparable within one result set and are not comparable across kinds, so do not sort a mixed result set on `relevance` alone. Same caution for `min_relevance` on `kn_recall`: it gates nodes on match strength and experiences on recency, one number against two scales. On a small store, a value such as 0.1 drops the node and keeps the experience (measured). On `kn_memories` and `kn_prune`, which see experiences only, it is recency - and on `kn_prune` it **deletes**.
+**Read `relevance_kind` before you read `relevance`.** `match` is lexical match strength (bm25). `match_recency` is match strength with a small recency nudge, a factor between 0.9 and 1.1, on an experience found by a text search. `recency` is pure time-decay on an experience listed with no search text: it says how old the row is, not whether it matched. `similarity` is embedding cosine on the semantic-recall path, and `unscored` marks a row the surface had no ranking for and filled in with a constant, from crossref or a text-less browse query. Both rows above show `1e-06` because SQLite's bm25 gives almost no weight to a word that appears in most entries. On a store with one fact every word does, so the score sits at SQLite's floor. It is not a bad match. After eight more unrelated facts, the same recall measured about 0.5 for both rows. On a store this small, a topic with a word the fact does not contain can score 0.0, and the row is still returned. Scores are only comparable within one result set and are not comparable across kinds, so do not sort a mixed result set on `relevance` alone. Same caution for `min_relevance` on `kn_recall`: it gates nodes on match strength and experiences on recency, one number against two scales. On a small store, a value such as 0.1 drops the node and keeps the experience (measured). On `kn_memories` and `kn_prune`, which see experiences only, it is recency - and on `kn_prune` it **deletes**.
 
 Run `kairn status ~/brain` any time as a smoke test - if it prints a JSON stats block (nodes/edges/experiences counts), the workspace is healthy. For a scripted tour, `kairn demo` adds sample data (two nodes, one edge and two experiences, measured) to the workspace it is given, so give it a throwaway one: `kairn init ~/kairn-tour && kairn demo ~/kairn-tour`.
 
@@ -322,11 +322,11 @@ kairn init [<path>]            # Initialize workspace; defaults to ~/.kairn
 kairn serve [<path>]           # Start MCP server (stdio); defaults to ~/.kairn
 kairn serve --init [<path>]    # Create workspace if needed and start MCP server; defaults to ~/.kairn
 kairn status <path>            # Graph stats
-kairn workspace create <name>  # Create workspace
-kairn workspace join <workspace_id> --token TOKEN  # Join workspace
+kairn workspace create <name>  # Team feature: separate store under ~/.kairn/workspaces, not usable by the <path> commands
+kairn workspace join <workspace_id> --token TOKEN  # Team feature: needs KAIRN_JWT_SECRET
 kairn workspace leave <workspace_id>  # Leave workspace
 kairn demo <path>              # Scripted tour that adds sample data
-kairn benchmark [<path>]       # Performance benchmarks in a temporary workspace
+kairn benchmark [--nodes N]  # Performance benchmarks in a temporary workspace
 kairn token-audit <path>       # Audit tool token usage
 
 kairn learn <path> --content TEXT --type TYPE  # Store knowledge; TYPE is decision, pattern, solution, workaround, gotcha or preference
@@ -487,15 +487,15 @@ Measure it yourself rather than trusting this table:
 kairn benchmark --nodes 100
 ```
 
-It runs in a temporary workspace that it removes afterwards, so your data is not touched.
+It runs in a temporary workspace that it removes afterwards, so your data is not touched. The numbers come from a fresh, empty store in the system temp folder, so they show the shape of Kairn's speed, not the speed of your own store or disk.
 
 One run of that command, 100 nodes, on an Apple M4 Pro:
 
 | Operation | Measured |
 |-----------|----------|
-| Insert | 0.8ms per node (1,298 ops/sec) |
-| FTS5 query | 0.2ms (5,165 ops/sec) |
-| Graph traversal | 6.0ms (167 ops/sec) |
+| Insert | 0.8ms per node (1,252 ops/sec) |
+| FTS5 query | 0.2ms (5,121 ops/sec) |
+| Graph traversal | 6.3ms (160 ops/sec) |
 
 Single run on one machine, so treat it as a shape rather than a spec - which is
 why the command is above the table. `kn_connect` and `kn_crossref` used to

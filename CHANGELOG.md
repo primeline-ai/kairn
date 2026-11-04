@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Changed
-- `kairn benchmark` runs in a temporary workspace and no longer needs a path. It used to leave edges and soft-deleted nodes in the workspace it was pointed at.
+- `kairn benchmark` runs in a temporary workspace and no longer needs a path. A path is still accepted but ignored, so a wrong path no longer exits 1. `--nodes` below 1 is refused. It used to leave edges and soft-deleted nodes in the workspace it was pointed at.
 
 ### Fixed
 - README recall example shows real output and explains the `match_recency` kind and small-store scores.
