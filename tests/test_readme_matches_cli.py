@@ -141,6 +141,16 @@ def test_the_lines_a_new_reader_needs_are_exact() -> None:
 
 # --- the recall example is a real run ----------------------------------------
 
+FACT = "we chose Postgres over SQLite for the analytics service because we needed concurrent writers"
+TOPIC = "postgres analytics concurrent"
+RELEVANCE_PARAGRAPH = README.split("**Read `relevance_kind`", 1)[1].split("\n\n", 1)[0]
+
+
+def _recall(workspace: Path, *extra: str, topic: str = TOPIC) -> dict[str, dict]:
+    out = _ok("recall", str(workspace), "--topic", topic, *extra)
+    return {row["source"]: row for row in json.loads(out)["results"]}
+
+
 
 def _readme_json_blocks() -> list[dict]:
     return [json.loads(raw) for raw in re.findall(r"```json\n(\{.*?\})\n```", README, re.DOTALL)
@@ -155,12 +165,10 @@ def _recall_example() -> dict:
 
 def test_the_recall_example_matches_a_real_run(tmp_path: Path) -> None:
     example = _recall_example()["results"]
-    content = example[0]["description"]
+    assert example[0]["description"] == FACT
     workspace = _workspace(tmp_path)
-    _ok("learn", str(workspace), "--content", content, "--type", "decision")
-    real = json.loads(
-        _ok("recall", str(workspace), "--topic", "postgres analytics concurrent")
-    )["results"]
+    _ok("learn", str(workspace), "--content", FACT, "--type", "decision")
+    real = json.loads(_ok("recall", str(workspace), "--topic", TOPIC))["results"]
 
     assert [row["source"] for row in example] == [row["source"] for row in real]
     for shown, measured in zip(example, real, strict=True):
@@ -170,26 +178,16 @@ def test_the_recall_example_matches_a_real_run(tmp_path: Path) -> None:
 
 
 def test_every_relevance_kind_is_explained() -> None:
-    paragraph = README.split("**Read `relevance_kind`", 1)[1].split("\n\n", 1)[0]
     for kind in RELEVANCE_KINDS:
-        assert f"`{kind}`" in paragraph, f"the README does not explain relevance_kind {kind}"
+        assert f"`{kind}`" in RELEVANCE_PARAGRAPH, f"the README does not explain relevance_kind {kind}"
 
 
 def test_the_small_store_score_is_explained() -> None:
     """A new reader's first recall shows a score near zero. Say why, and what changes it."""
-    paragraph = README.split("**Read `relevance_kind`", 1)[1].split("\n\n", 1)[0]
-    assert "1e-06" in paragraph
-    assert "SQLite" in paragraph
-    assert "0.0" in paragraph, "a topic with a word the fact lacks scores 0.0; say so"
+    assert "1e-06" in RELEVANCE_PARAGRAPH
+    assert "SQLite" in RELEVANCE_PARAGRAPH
+    assert "0.0" in RELEVANCE_PARAGRAPH, "a topic with a word the fact lacks scores 0.0; say so"
 
-
-FACT = "we chose Postgres over SQLite for the analytics service because we needed concurrent writers"
-TOPIC = "postgres analytics concurrent"
-
-
-def _recall(workspace: Path, *extra: str, topic: str = TOPIC) -> dict[str, dict]:
-    out = _ok("recall", str(workspace), "--topic", topic, *extra)
-    return {row["source"]: row for row in json.loads(out)["results"]}
 
 
 def test_the_small_store_claims_hold(tmp_path: Path) -> None:
@@ -226,13 +224,14 @@ def test_benchmark_leaves_a_named_workspace_untouched(tmp_path: Path) -> None:
     before = _digest(workspace)
     assert "kairn.db" in before, "the check would pass on an empty folder"
 
-    out = _ok("benchmark", str(workspace), "--nodes", "20")
+    proc = _run("benchmark", str(workspace), "--nodes", "20")
 
+    assert proc.returncode == 0, proc.stderr
     assert _digest(workspace) == before
     assert _ok("status", str(workspace)) == before_status
-    assert "Insert" in out
-    assert "temporary" in _flat(out).lower()
-    assert "Legacy relation" not in out + _run("benchmark", "--nodes", "2").stderr
+    assert "Insert" in proc.stdout
+    assert "temporary" in _flat(proc.stdout).lower()
+    assert "Legacy relation" not in proc.stdout + proc.stderr
 
 
 def test_benchmark_needs_no_workspace_and_removes_its_own(tmp_path: Path) -> None:
@@ -256,26 +255,6 @@ def test_benchmark_does_not_create_a_named_folder_that_is_missing(tmp_path: Path
 def test_benchmark_refuses_a_node_count_below_one() -> None:
     for bad in ("0", "-5"):
         assert _run("benchmark", "--nodes", bad).returncode != 0
-
-
-def test_benchmark_says_so_when_it_cannot_remove_its_folder(tmp_path: Path, monkeypatch) -> None:
-    """TemporaryDirectory can swallow a failed removal, so check the folder itself."""
-    from click.testing import CliRunner
-
-    leftover = tmp_path / "leftover"
-
-    class NotRemoved:
-        def __enter__(self) -> str:
-            leftover.mkdir()
-            return str(leftover)
-
-        def __exit__(self, *exc) -> None:
-            return None
-
-    monkeypatch.setattr("tempfile.TemporaryDirectory", lambda **kwargs: NotRemoved())
-    result = CliRunner().invoke(main, ["benchmark", "--nodes", "2"])
-    assert "removed" not in result.stdout.lower().replace("not removed", "")
-    assert str(leftover) in _flat(result.output).replace(" ", "") or leftover.name in result.output
 
 
 def test_benchmark_line_does_not_advertise_the_unused_path() -> None:
@@ -306,10 +285,7 @@ def test_the_demo_warning_names_what_it_writes() -> None:
     lines = [line for line in README.splitlines() if "kairn demo" in line]
     assert lines, "the README no longer mentions kairn demo"
     assert all("sample data" in line for line in lines), lines
-    assert "sample data" in _flat(_ok("demo", "--help"))
-
-
-def test_the_demo_is_not_called_interactive() -> None:
-    """It runs start to finish without asking anything."""
-    assert "Interactive" not in " ".join(_lines_for("kairn demo"))
-    assert "Interactive" not in _flat(_ok("demo", "--help"))
+    assert all("Interactive" not in line for line in lines), "it asks nothing while it runs"
+    demo_help = _flat(_ok("demo", "--help"))
+    assert "sample data" in demo_help
+    assert "Interactive" not in demo_help

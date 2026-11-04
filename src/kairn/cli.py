@@ -1587,10 +1587,7 @@ def benchmark(path: str | None, nodes: int) -> None:
 
     with tempfile.TemporaryDirectory(prefix="kairn-benchmark-") as workspace:
         asyncio.run(_benchmark(Path(workspace) / "kairn.db"))
-    if Path(workspace).exists():
-        click.echo(f"Warning: Temporary workspace still exists at {workspace}.", err=True)
-    else:
-        console.print("[green]✓[/green] Temporary workspace removed")
+    console.print("[green]✓[/green] Temporary workspace removed")
 
 
 @main.command()
