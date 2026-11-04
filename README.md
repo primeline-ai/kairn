@@ -148,16 +148,16 @@ Start a **new** session and ask it to recall the same thing - that calls `kn_rec
 
 ```json
 {"_v": "1.0", "count": 2, "results": [
-  {"source": "node", "id": "002d9c22", "name": "Decision: we chose Postgres over SQLite for the analytics service beca", "type": "learned_decision", "description": "we chose Postgres over SQLite for the analytics service because we needed concurrent writers", "relevance": 1.0, "relevance_kind": "match"},
-  {"source": "experience", "id": "d0710c2f", "type": "decision", "content": "we chose Postgres over SQLite for the analytics service because we needed concurrent writers", "confidence": "high", "relevance": 1.0, "relevance_kind": "recency"}
+  {"source": "node", "id": "002d9c22", "name": "Decision: we chose Postgres over SQLite for the analytics service beca", "type": "learned_decision", "namespace": "knowledge", "description": "we chose Postgres over SQLite for the analytics service because we needed concurrent writers", "relevance": 1e-06, "relevance_kind": "match"},
+  {"source": "experience", "id": "d0710c2f", "type": "decision", "namespace": "knowledge", "content": "we chose Postgres over SQLite for the analytics service because we needed concurrent writers", "confidence": "high", "relevance": 1e-06, "relevance_kind": "match_recency"}
 ]}
 ```
 
 `kn_learn` stored both a permanent graph node and a decaying experience (high confidence does both, see [Confidence routing](https://github.com/primeline-ai/kairn/blob/v0.3.1/README.md#decay-model)); `kn_recall` found both from a three-word topic.
 
-**Read `relevance_kind` before you read `relevance`.** Both rows above show `1.0` and they do not mean the same thing. `match` is lexical match strength (bm25); the experience's `recency` is time-decay - it is 1.0 because the row was created seconds ago, not because it matched well. A third value, `similarity`, is embedding cosine on the semantic-recall path, and `unscored` marks a row the surface had no ranking for and filled in with a constant. The numbers are not comparable across kinds, so do not sort a mixed result set on `relevance` alone. Same caution for `min_relevance` on `kn_recall`: it gates nodes on match strength and experiences on recency, one number against two scales. On `kn_memories` and `kn_prune`, which see experiences only, it is recency - and on `kn_prune` it **deletes**.
+**Read `relevance_kind` before you read `relevance`.** `match` is lexical match strength (bm25). `match_recency` is match strength with a small recency nudge, a factor between 0.9 and 1.1, on an experience found by a text search. `recency` is pure time-decay on an experience listed with no search text: it says how old the row is, not whether it matched. `similarity` is embedding cosine on the semantic-recall path, and `unscored` marks a row the surface had no ranking for and filled in with a constant, from crossref or a text-less browse query. Both rows above show `1e-06` because SQLite's bm25 gives almost no weight to a word that appears in most entries. On a store with one fact every word does, so the score sits at SQLite's floor. It is not a bad match. After eight more unrelated facts, the same recall measured about 0.5 for both rows. On a store this small, a topic with a word the fact does not contain can score 0.0, and the row is still returned. Scores are only comparable within one result set and are not comparable across kinds, so do not sort a mixed result set on `relevance` alone. Same caution for `min_relevance` on `kn_recall`: it gates nodes on match strength and experiences on recency, one number against two scales. On a small store, a value such as 0.1 drops the node and keeps the experience (measured). On `kn_memories` and `kn_prune`, which see experiences only, it is recency - and on `kn_prune` it **deletes**.
 
-Run `kairn status ~/brain` any time as a smoke test - if it prints a JSON stats block (nodes/edges/experiences counts), the workspace is healthy. Want a scripted tour of every core feature instead of doing it by hand? Run `kairn demo ~/brain` - it walks through node creation, querying, experience saving, learning, recall, and context in about 30 seconds.
+Run `kairn status ~/brain` any time as a smoke test - if it prints a JSON stats block (nodes/edges/experiences counts), the workspace is healthy. For a scripted tour, `kairn demo` adds sample data (two nodes, one edge and two experiences, measured) to the workspace it is given, so give it a throwaway one: `kairn init ~/kairn-tour && kairn demo ~/kairn-tour`.
 
 ### Which tool when
 
@@ -322,12 +322,40 @@ kairn init [<path>]            # Initialize workspace; defaults to ~/.kairn
 kairn serve [<path>]           # Start MCP server (stdio); defaults to ~/.kairn
 kairn serve --init [<path>]    # Create workspace if needed and start MCP server; defaults to ~/.kairn
 kairn status <path>            # Graph stats
-kairn demo <path>              # Interactive tutorial
-kairn benchmark <path>         # Local performance benchmarks (latency, not LongMemEval)
+kairn workspace create <name>  # Team feature: separate store under ~/.kairn/workspaces, not usable by the <path> commands
+kairn workspace join <workspace_id> --token TOKEN  # Team feature: needs KAIRN_JWT_SECRET
+kairn workspace leave <workspace_id>  # Leave workspace
+kairn demo <path>              # Scripted tour that adds sample data
+kairn benchmark [--nodes N]  # Performance benchmarks in a temporary workspace
 kairn token-audit <path>       # Audit tool token usage
-kairn import git <path> <repo>...  # Import git commit history (zero-LLM, offline)
+
+kairn learn <path> --content TEXT --type TYPE  # Store knowledge; TYPE is decision, pattern, solution, workaround, gotcha or preference
+kairn recall <path> --topic TEXT  # Recall knowledge from nodes and experiences
+kairn context <path> --keywords TEXT  # Get relevant context
+kairn memories <path>          # Search or list experiences
+kairn crossref <path> --problem TEXT  # Find related solutions
+
+kairn add <path> --name TEXT --type TYPE  # Add node
+kairn connect <path> --source-id ID --target-id ID --edge-type TYPE  # Connect nodes
+kairn judge <path> --source-id ID --target-id ID --relation RELATION  # Record relationship judgment
+kairn doctor <path>            # Check graph health
+kairn remove <path>            # Remove node or edge using options
+kairn query <path>             # Query nodes
+kairn related <path> --node-id ID  # Traverse related nodes
+kairn prune <path>             # Delete experiences below recency threshold
+kairn promote-pending <path>   # Promote pending knowledge
+
+kairn project <path> --name TEXT  # Create or update project
+kairn projects <path>          # List or select projects
+kairn log <path> --project-id ID --action TEXT  # Record project progress or failure
+kairn idea <path> --title TEXT  # Create or update idea
+kairn ideas <path>             # List ideas
+
+kairn import git <path> <repos>...  # Import git commit history (zero-LLM, offline)
 kairn import claude-code <path>    # Import Claude Code session history (zero-LLM, offline)
 ```
+
+Run `kairn <command> --help` for every option.
 
 ### Importing your history
 
@@ -456,16 +484,18 @@ src/kairn/
 Measure it yourself rather than trusting this table:
 
 ```bash
-kairn benchmark ~/brain --nodes 100
+kairn benchmark --nodes 100
 ```
+
+It runs in a temporary workspace that it removes afterwards, so your data is not touched. The numbers come from a fresh, empty store in the system temp folder, so they show the shape of Kairn's speed, not the speed of your own store or disk.
 
 One run of that command, 100 nodes, on an Apple M4 Pro:
 
 | Operation | Measured |
 |-----------|----------|
-| Insert | 0.7ms per node (1,479 ops/sec) |
-| FTS5 query | 0.2ms (5,552 ops/sec) |
-| Graph traversal | 6.0ms (166 ops/sec) |
+| Insert | 0.8ms per node (1,252 ops/sec) |
+| FTS5 query | 0.2ms (5,121 ops/sec) |
+| Graph traversal | 6.3ms (160 ops/sec) |
 
 Single run on one machine, so treat it as a shape rather than a spec - which is
 why the command is above the table. `kn_connect` and `kn_crossref` used to
