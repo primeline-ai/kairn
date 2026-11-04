@@ -84,9 +84,7 @@ def _cli_lines() -> list[str]:
 
 def _lines_for(command_path: str) -> list[str]:
     return [
-        line
-        for line in _cli_lines()
-        if line == command_path or line.startswith(command_path + " ")
+        line for line in _cli_lines() if line == command_path or line.startswith(command_path + " ")
     ]
 
 
@@ -110,7 +108,9 @@ def test_required_flags_and_arguments_are_shown(command_path: str) -> None:
             continue
         if isinstance(param, click.Option):
             flag = max(param.opts, key=len)
-            assert flag in shown.split(), f"{command_path} needs {flag}, the README does not show it"
+            assert flag in shown.split(), (
+                f"{command_path} needs {flag}, the README does not show it"
+            )
         else:
             name = f"<{param.name}"
             assert name in shown and f"[{name}" not in shown, (
@@ -141,7 +141,9 @@ def test_the_lines_a_new_reader_needs_are_exact() -> None:
 
 # --- the recall example is a real run ----------------------------------------
 
-FACT = "we chose Postgres over SQLite for the analytics service because we needed concurrent writers"
+FACT = (
+    "we chose Postgres over SQLite for the analytics service because we needed concurrent writers"
+)
 TOPIC = "postgres analytics concurrent"
 RELEVANCE_PARAGRAPH = README.split("**Read `relevance_kind`", 1)[1].split("\n\n", 1)[0]
 
@@ -151,10 +153,12 @@ def _recall(workspace: Path, *extra: str, topic: str = TOPIC) -> dict[str, dict]
     return {row["source"]: row for row in json.loads(out)["results"]}
 
 
-
 def _readme_json_blocks() -> list[dict]:
-    return [json.loads(raw) for raw in re.findall(r"```json\n(\{.*?\})\n```", README, re.DOTALL)
-            if '"_v"' in raw]
+    return [
+        json.loads(raw)
+        for raw in re.findall(r"```json\n(\{.*?\})\n```", README, re.DOTALL)
+        if '"_v"' in raw
+    ]
 
 
 def _recall_example() -> dict:
@@ -179,7 +183,9 @@ def test_the_recall_example_matches_a_real_run(tmp_path: Path) -> None:
 
 def test_every_relevance_kind_is_explained() -> None:
     for kind in RELEVANCE_KINDS:
-        assert f"`{kind}`" in RELEVANCE_PARAGRAPH, f"the README does not explain relevance_kind {kind}"
+        assert f"`{kind}`" in RELEVANCE_PARAGRAPH, (
+            f"the README does not explain relevance_kind {kind}"
+        )
 
 
 def test_the_small_store_score_is_explained() -> None:
@@ -187,7 +193,6 @@ def test_the_small_store_score_is_explained() -> None:
     assert "1e-06" in RELEVANCE_PARAGRAPH
     assert "SQLite" in RELEVANCE_PARAGRAPH
     assert "0.0" in RELEVANCE_PARAGRAPH, "a topic with a word the fact lacks scores 0.0; say so"
-
 
 
 def test_the_small_store_claims_hold(tmp_path: Path) -> None:
@@ -200,8 +205,14 @@ def test_the_small_store_claims_hold(tmp_path: Path) -> None:
     assert partial["experience"]["relevance"] == 0.0
 
     for number in range(8):
-        _ok("learn", str(workspace), "--content", f"unrelated note {number} about backups",
-            "--type", "pattern")
+        _ok(
+            "learn",
+            str(workspace),
+            "--content",
+            f"unrelated note {number} about backups",
+            "--type",
+            "pattern",
+        )
     grown = _recall(workspace)
     assert grown["node"]["relevance"] > 0.3
     assert grown["experience"]["relevance"] > 0.3
