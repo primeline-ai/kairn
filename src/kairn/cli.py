@@ -35,6 +35,7 @@ import os
 import shlex
 import sqlite3
 import sys
+import tempfile
 import time
 import uuid
 from datetime import UTC, datetime
@@ -411,7 +412,7 @@ def leave(workspace_id: str) -> None:
 @main.command()
 @click.argument("path", type=click.Path())
 def demo(path: str) -> None:
-    """Interactive demo tutorial."""
+    """Run a scripted tour that adds sample data to the workspace at PATH."""
     workspace = Path(path).expanduser().resolve()
     db_path = workspace / "kairn.db"
 
@@ -1516,82 +1517,77 @@ def related(
 
 
 @main.command()
-@click.argument("path", type=click.Path())
+@click.argument("path", type=click.Path(), required=False)
 @click.option("--nodes", default=1000, help="Number of nodes to create")
-def benchmark(path: str, nodes: int) -> None:
-    """Run performance benchmarks."""
-    workspace = Path(path).expanduser().resolve()
-    db_path = workspace / "kairn.db"
-
-    if not db_path.exists():
-        click.echo(f"Error: No database at {db_path}. Run 'kairn init' first.", err=True)
-        sys.exit(1)
+def benchmark(path: str | None, nodes: int) -> None:
+    """Run performance benchmarks in a temporary workspace, leaving PATH untouched."""
+    if path is not None:
+        click.echo(f"Benchmark runs in a temporary workspace and does not touch {path}.")
 
     console = Console()
 
-    async def _benchmark() -> None:
+    async def _benchmark(db_path: Path) -> None:
         from kairn.core.graph import GraphEngine
         from kairn.events.bus import EventBus
 
         store = SQLiteStore(db_path)
-        await store.initialize()
-        bus = EventBus()
-        graph = GraphEngine(store, bus)
+        try:
+            await store.initialize()
+            bus = EventBus()
+            graph = GraphEngine(store, bus)
 
-        console.print(
-            Panel(
-                f"[bold cyan]Performance Benchmark[/bold cyan]\n\n"
-                f"Creating {nodes} nodes and measuring performance...",
-                title="Kairn Benchmark",
+            console.print(
+                Panel(
+                    f"[bold cyan]Performance Benchmark[/bold cyan]\n\n"
+                    "Running in a temporary workspace.\n"
+                    f"Creating {nodes} nodes and measuring performance...",
+                    title="Kairn Benchmark",
+                )
             )
-        )
 
-        table = Table(title="Benchmark Results")
-        table.add_column("Operation", style="cyan")
-        table.add_column("Time (s)", style="magenta")
-        table.add_column("Ops/sec", style="green")
+            table = Table(title="Benchmark Results")
+            table.add_column("Operation", style="cyan")
+            table.add_column("Time (s)", style="magenta")
+            table.add_column("Ops/sec", style="green")
 
-        # Insert benchmark
-        node_ids: list[str] = []
-        start = time.time()
-        for i in range(nodes):
-            node = await graph.add_node(
-                name=f"bench-node-{i}",
-                type="test",
-                namespace="knowledge",
-                description=f"Benchmark node {i} with content for search testing",
-            )
-            node_ids.append(node.id)
-        insert_time = time.time() - start
-        table.add_row("Insert", f"{insert_time:.2f}", f"{nodes / insert_time:.0f}")
+            # Insert benchmark
+            node_ids: list[str] = []
+            start = time.time()
+            for i in range(nodes):
+                node = await graph.add_node(
+                    name=f"bench-node-{i}",
+                    type="test",
+                    namespace="knowledge",
+                    description=f"Benchmark node {i} with content for search testing",
+                )
+                node_ids.append(node.id)
+            insert_time = time.time() - start
+            table.add_row("Insert", f"{insert_time:.2f}", f"{nodes / insert_time:.0f}")
 
-        # FTS5 query benchmark
-        iterations = 100
-        start = time.time()
-        for _ in range(iterations):
-            await graph.query(text="benchmark search testing", limit=10)
-        query_time = (time.time() - start) / iterations
-        table.add_row("FTS5 Query", f"{query_time:.4f}", f"{1 / query_time:.0f}")
-
-        # Graph traversal benchmark
-        if len(node_ids) >= 2:
-            await graph.connect(node_ids[0], node_ids[1], "test_link")
+            # FTS5 query benchmark
+            iterations = 100
             start = time.time()
             for _ in range(iterations):
-                await graph.get_related(node_ids[0], depth=1)
-            traverse_time = (time.time() - start) / iterations
-            table.add_row("Graph Traversal", f"{traverse_time:.4f}", f"{1 / traverse_time:.0f}")
+                await graph.query(text="benchmark search testing", limit=10)
+            query_time = (time.time() - start) / iterations
+            table.add_row("FTS5 Query", f"{query_time:.4f}", f"{1 / query_time:.0f}")
 
-        console.print(table)
+            # Graph traversal benchmark
+            if len(node_ids) >= 2:
+                await graph.connect(node_ids[0], node_ids[1], "test_link")
+                start = time.time()
+                for _ in range(iterations):
+                    await graph.get_related(node_ids[0], depth=1)
+                traverse_time = (time.time() - start) / iterations
+                table.add_row("Graph Traversal", f"{traverse_time:.4f}", f"{1 / traverse_time:.0f}")
 
-        # Cleanup
-        console.print("\n[yellow]Cleaning up test data...[/yellow]")
-        for node_id in node_ids:
-            await store.soft_delete_node(node_id)
-        await store.close()
-        console.print("[green]✓[/green] Cleanup complete")
+            console.print(table)
+        finally:
+            await store.close()
 
-    asyncio.run(_benchmark())
+    with tempfile.TemporaryDirectory(prefix="kairn-benchmark-") as workspace:
+        asyncio.run(_benchmark(Path(workspace) / "kairn.db"))
+    console.print("[green]✓[/green] Temporary workspace removed")
 
 
 @main.command()

@@ -142,7 +142,7 @@ public library directly (`ExperienceEngine.search`, the same call
 3. Keep the sandbox contract: one fresh DB per question, production workspace
    untouched (verify by hashing the DB file before and after).
 
-The performance half ships with Kairn itself: `kairn benchmark <workspace>`
+The performance half ships with Kairn itself: `kairn benchmark`
 measures insert, FTS5 query, and graph traversal latency at scale on your own
 machine. It does not run LongMemEval.
 

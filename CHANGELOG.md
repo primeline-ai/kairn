@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- `kairn benchmark` runs in a temporary workspace and no longer needs a path. It used to leave edges and soft-deleted nodes in the workspace it was pointed at.
+
+### Fixed
+- README recall example shows real output and explains the `match_recency` kind and small-store scores.
+- README warns that `kairn demo` adds sample data.
+- README CLI section lists every command with its required arguments and flags.
+
 ## 0.3.1 - 2026-10-11
 
 ### Changed
