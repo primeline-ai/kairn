@@ -457,6 +457,8 @@ pytest tests/ -v --cov
 ruff check src/ && ruff format src/
 ```
 
+Cutting a release: see [RELEASING.md](RELEASING.md).
+
 ### Project Structure
 
 ```
