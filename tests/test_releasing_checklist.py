@@ -4,6 +4,10 @@ The check in RELEASING.md is the one step that walks the README the way a new
 reader does. These tests fail if the section is removed, if it loses the two
 kinds of defect it reports, its filter or its length bound, or if the README
 stops pointing at the checklist.
+
+They check wording, not meaning: an edit that keeps these phrases but adds a
+sentence reversing them still passes. They guard against the check being
+dropped, and a reviewer still has to read any change to RELEASING.md.
 """
 
 from __future__ import annotations
