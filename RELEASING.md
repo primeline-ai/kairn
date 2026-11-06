@@ -1,19 +1,22 @@
 # Releasing Kairn
 
-The upload itself is automatic. Pushing a `v*` tag runs
-`.github/workflows/publish-pypi.yml`, which checks that the tag matches the
-package version, tests, builds and publishes through PyPI Trusted Publishing.
-The MCP Registry entry is published by hand with
-`.github/workflows/publish-mcp-registry.yml`, after the release asset exists and
-has been checked. This file is what happens before the tag.
+Pushing a `v*` tag runs `.github/workflows/publish-pypi.yml`: it checks the tag
+against both `pyproject.toml` and `__version__` in `src/kairn/__init__.py`,
+builds the distributions, tests the built wheel on one Linux / Python 3.12 job,
+and publishes to PyPI. The full test matrix runs only in `ci.yml`, so the
+commit you tag should have a green `ci.yml` run of its own. The MCP Registry
+entry is published separately, by hand, with
+`.github/workflows/publish-mcp-registry.yml`.
+
+This file does not yet list every release step (the other version fields, the
+`.mcpb` bundle, the registry entry). It holds the one check that has to happen
+before any tag.
 
 ## Before the tag
 
-1. CI is green on `main` (`.github/workflows/ci.yml`).
-2. The version in `pyproject.toml` is the version you are about to tag.
-3. `CHANGELOG.md` moves the `Unreleased` entries under that version.
-4. The quickstart check below found no open defect, or every defect it found is
-   fixed or listed in `CHANGELOG.md` as known.
+Run the quickstart check below on the commit you are about to tag. Every defect
+it finds is fixed, or listed as known in `CHANGELOG.md`, before the tag is
+pushed.
 
 ## Quickstart check
 

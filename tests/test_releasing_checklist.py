@@ -22,7 +22,7 @@ def _text(path: Path) -> str:
 
 
 def _section(text: str, heading: str) -> str:
-    lines = text.splitlines()
+    lines = [line.rstrip() for line in text.splitlines()]
     assert heading in lines, f"RELEASING.md has no heading line '{heading}'"
     start = lines.index(heading) + 1
     end = next(
@@ -47,9 +47,12 @@ def test_the_quickstart_check_stays_on_task_and_short() -> None:
 
 
 def test_the_tag_waits_for_the_quickstart_check() -> None:
-    section = _section(_text(RELEASING), "## Before the tag")
-    assert "quickstart check" in section.lower(), (
-        "'Before the tag' no longer requires the quickstart check"
+    section = " ".join(_section(_text(RELEASING), "## Before the tag").split())
+    assert "Run the quickstart check below on the commit you are about to tag" in section, (
+        "'Before the tag' no longer tells the releaser to run the quickstart check"
+    )
+    assert "before the tag is pushed" in section, (
+        "'Before the tag' no longer says the defects are handled before the tag"
     )
 
 
