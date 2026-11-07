@@ -4,7 +4,13 @@ Pushing a `v*` tag runs `.github/workflows/publish-pypi.yml`: it checks the tag
 against both `pyproject.toml` and `__version__` in `src/kairn/__init__.py`,
 builds the distributions, tests the built wheel on one Linux / Python 3.12 job,
 and publishes to PyPI. The full test matrix runs only in `ci.yml`, so the
-commit you tag should have a green `ci.yml` run of its own. The MCP Registry
+commit you tag needs a `ci.yml` run of its own in which every job is green
+except `mcpb bundle`. That job fails on purpose until the release is on PyPI:
+its version parity test reads the kairn-ai pin in `packaging/mcpb/uv.lock`, and
+that lock can only be regenerated after the publish. Check its log: the one
+failure must be the `bundle uv.lock pin` line. After the publish, run
+`uv lock --upgrade-package kairn-ai` in `packaging/mcpb` and commit the lock;
+that commit turns `mcpb bundle` green. The MCP Registry
 entry is published separately, by hand, with
 `.github/workflows/publish-mcp-registry.yml`.
 
@@ -27,7 +33,11 @@ environment, the README open, nothing else.
    one thing a new user should see when the quickstart worked, for example
    `kairn status ~/brain` printing its JSON stats block.
 2. **Follow the README exactly**, command by command, in its order. Fix nothing
-   quietly: a command you had to change before it ran is a finding.
+   quietly: a command you had to change before it ran is a finding. The one
+   planned exception is the install: the README's `pip install kairn-ai`
+   installs the release already on PyPI, not the commit you are checking. Build
+   the wheel from that commit with `uv build` and install it instead with
+   `pip install dist/kairn_ai-<version>-py3-none-any.whl`.
 3. **Report two kinds of defect only:**
    - *doc vs code*: a command, flag, default, file name or step order the README
      states that the code does not have (check it against `src/kairn/cli.py`);
