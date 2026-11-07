@@ -11,7 +11,7 @@
     {
       "registryType": "mcpb",
       "identifier": "https://github.com/primeline-ai/kairn/releases/download/v0.3.2/kairn-0.3.2.mcpb",
-      "fileSha256": "0cc65ad4919fcb110c645d56bebfb7d57da4dad8702a29e5b46a650f6c113aa2",
+      "fileSha256": "4044cdaf8662c4b19cdc066ea442e849822d88b28eac0b89ea2ab25763b699d7",
       "version": "0.3.2",
       "transport": {
         "type": "stdio"
