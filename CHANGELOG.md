@@ -10,13 +10,15 @@
 - README warns that `kairn demo` adds sample data.
 - README CLI section lists every command with its required arguments and flags.
 
-### Security
-- The `.mcpb` bundle lock (`packaging/mcpb/uv.lock`) takes the patched releases for 20 Dependabot alerts (2 critical): authlib 1.9.1, certifi 2026.10.18, dnspython 2.9.0, fastmcp and fastmcp-slim 3.4.10, joserfc 1.7.6, mcp 1.30.0, opentelemetry-api 1.45.1. The PyPI package `kairn-ai` was not affected: these pins live only in the bundle lock.
-
 ### Added
 - `RELEASING.md` with the quickstart check that runs before every tag.
 
+### Security
+- The `.mcpb` bundle lock (`packaging/mcpb/uv.lock`) takes the patched releases for 20 Dependabot alerts (2 critical): authlib 1.9.1, certifi 2026.10.18, dnspython 2.9.0, fastmcp and fastmcp-slim 3.4.10, joserfc 1.7.6, mcp 1.30.0, opentelemetry-api 1.45.1.
+- The PyPI package `kairn-ai` does not pin these packages. A fresh `pip install kairn-ai` resolves their patched releases, but its ranges (for example `fastmcp>=2.14,<5.0`) still allow the vulnerable ones, so an existing environment keeps whatever it already has. Upgrade there with `pip install -U fastmcp mcp authlib`.
+
 ### All changes since 0.3.1
+- be5be71 Bundle lock pins kairn-ai 0.3.1 now that it is on PyPI, merged after the 0.3.1 tag (#43)
 - b460034 server.json sha256 for the 0.3.1 bundle (#44)
 - 5f5e27b Plugin icon (#45)
 - a5db2fa Plugin listing links (#46)
