@@ -9,8 +9,8 @@
 
 <!-- mcp-name: io.github.primeline-ai/kairn -->
 
-**Status: pre-1.0.** In daily use since February 2026, with a test suite that runs on Linux, macOS and Windows (see [Development](https://github.com/primeline-ai/kairn/blob/v0.3.1/README.md#development)) and a published
-[LongMemEval-S benchmark](https://github.com/primeline-ai/kairn/blob/v0.3.1/README.md#benchmarks) (measured before 0.3.0). Interfaces may still change between
+**Status: pre-1.0.** In daily use since February 2026, with a test suite that runs on Linux, macOS and Windows (see [Development](https://github.com/primeline-ai/kairn/blob/v0.3.2/README.md#development)) and a published
+[LongMemEval-S benchmark](https://github.com/primeline-ai/kairn/blob/v0.3.2/README.md#benchmarks) (measured before 0.3.0). Interfaces may still change between
 releases until 1.0. Feedback and issues welcome.
 
 Other tools give your AI a memory. **Kairn** gives it a knowledge graph with intelligent context routing. It knows what to load, when to load it, and how much - so your AI stays focused, not overwhelmed.
@@ -32,7 +32,7 @@ Or install it as a one-click bundle, no Python setup required: download the
 `.mcpb` file from the [latest release](https://github.com/primeline-ai/kairn/releases/latest)
 and open it with a bundle-aware app such as Claude Desktop.
 
-For other clients, see [Quick Start](https://github.com/primeline-ai/kairn/blob/v0.3.1/README.md#quick-start) below. New to Kairn? Jump to [First 5 Minutes](https://github.com/primeline-ai/kairn/blob/v0.3.1/README.md#first-5-minutes).
+For other clients, see [Quick Start](https://github.com/primeline-ai/kairn/blob/v0.3.2/README.md#quick-start) below. New to Kairn? Jump to [First 5 Minutes](https://github.com/primeline-ai/kairn/blob/v0.3.2/README.md#first-5-minutes).
 
 ## Install routes
 
@@ -153,7 +153,7 @@ Start a **new** session and ask it to recall the same thing - that calls `kn_rec
 ]}
 ```
 
-`kn_learn` stored both a permanent graph node and a decaying experience (high confidence does both, see [Confidence routing](https://github.com/primeline-ai/kairn/blob/v0.3.1/README.md#decay-model)); `kn_recall` found both from a three-word topic.
+`kn_learn` stored both a permanent graph node and a decaying experience (high confidence does both, see [Confidence routing](https://github.com/primeline-ai/kairn/blob/v0.3.2/README.md#decay-model)); `kn_recall` found both from a three-word topic.
 
 **Read `relevance_kind` before you read `relevance`.** `match` is lexical match strength (bm25). `match_recency` is match strength with a small recency nudge, a factor between 0.9 and 1.1, on an experience found by a text search. `recency` is pure time-decay on an experience listed with no search text: it says how old the row is, not whether it matched. `similarity` is embedding cosine on the semantic-recall path, and `unscored` marks a row the surface had no ranking for and filled in with a constant, from crossref or a text-less browse query. Both rows above show `1e-06` because SQLite's bm25 gives almost no weight to a word that appears in most entries. On a store with one fact every word does, so the score sits at SQLite's floor. It is not a bad match. After eight more unrelated facts, the same recall measured about 0.5 for both rows. On a store this small, a topic with a word the fact does not contain can score 0.0, and the row is still returned. Scores are only comparable within one result set and are not comparable across kinds, so do not sort a mixed result set on `relevance` alone. Same caution for `min_relevance` on `kn_recall`: it gates nodes on match strength and experiences on recency, one number against two scales. On a small store, a value such as 0.1 drops the node and keeps the experience (measured). On `kn_memories` and `kn_prune`, which see experiences only, it is recency - and on `kn_prune` it **deletes**.
 
@@ -173,7 +173,7 @@ Run `kairn status ~/brain` any time as a smoke test - if it prints a JSON stats 
 | Search saved experiences, ranked by relevance and decay | `kn_memories` | You're looking for experience content (solutions, gotchas, workarounds), not graph nodes |
 | Surface everything relevant to a topic in one call | `kn_recall` (flat list) or `kn_context` (subgraph, progressive disclosure: summary first, full detail on demand) | You don't know yet whether the answer is a node or an experience - let Kairn search both |
 
-Everything else (`kn_crossref`, `kn_related`, `kn_connect`, `kn_judge`, `kn_project`/`kn_projects`/`kn_log`, `kn_idea`/`kn_ideas`, `kn_promote_pending`, `kn_prune`, `kn_remove`, `kn_status`, `kn_doctor`) is advanced usage - see the full [22 Tools](https://github.com/primeline-ai/kairn/blob/v0.3.1/README.md#22-tools-kn_-prefix) reference below once you're past the basics.
+Everything else (`kn_crossref`, `kn_related`, `kn_connect`, `kn_judge`, `kn_project`/`kn_projects`/`kn_log`, `kn_idea`/`kn_ideas`, `kn_promote_pending`, `kn_prune`, `kn_remove`, `kn_status`, `kn_doctor`) is advanced usage - see the full [22 Tools](https://github.com/primeline-ai/kairn/blob/v0.3.2/README.md#22-tools-kn_-prefix) reference below once you're past the basics.
 
 ## 22 Tools (kn_ prefix)
 
