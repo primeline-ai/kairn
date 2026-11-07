@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 - 2026-11-07
 
 ### Changed
 - `kairn benchmark` runs in a temporary workspace and no longer needs a path. A path is still accepted but ignored, so a wrong path no longer exits 1. `--nodes` below 1 is refused. It used to leave edges and soft-deleted nodes in the workspace it was pointed at.
@@ -9,6 +9,21 @@
 - README recall example shows real output and explains the `match_recency` kind and small-store scores.
 - README warns that `kairn demo` adds sample data.
 - README CLI section lists every command with its required arguments and flags.
+
+### Security
+- The `.mcpb` bundle lock (`packaging/mcpb/uv.lock`) takes the patched releases for 20 Dependabot alerts (2 critical): authlib 1.9.1, certifi 2026.10.18, dnspython 2.9.0, fastmcp and fastmcp-slim 3.4.10, joserfc 1.7.6, mcp 1.30.0, opentelemetry-api 1.45.1. The PyPI package `kairn-ai` was not affected: these pins live only in the bundle lock.
+
+### Added
+- `RELEASING.md` with the quickstart check that runs before every tag.
+
+### All changes since 0.3.1
+- b460034 server.json sha256 for the 0.3.1 bundle (#44)
+- 5f5e27b Plugin icon (#45)
+- a5db2fa Plugin listing links (#46)
+- 8f551a2 Plugin privacy page (#47)
+- e04045e README matches real output; `kairn benchmark` in a temporary workspace (#56)
+- a364323 Release checklist with the quickstart check (#57)
+- Dependabot bundle lock updates #48, #49, #50, #51, #53, #54, #55
 
 ## 0.3.1 - 2026-10-11
 
